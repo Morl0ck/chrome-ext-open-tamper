@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Open Tamper Options</title>
+  <link rel="stylesheet" href="options.css" />
+</head>
+<body>
+  <main class="container">
+    <header>
+      <h1>Open Tamper</h1>
+      <p class="subtitle">Add remote userscripts from raw GitHub URLs and manage where they run.</p>
+    </header>
+
+    <section id="userscripts-warning" class="warning" hidden>
+      <h2>User Script Support Disabled</h2>
+      <p>
+        Chrome’s <code>chrome.userScripts</code> API is not available. Scripts will not auto-run until you enable
+        the “Enable extension manifest V3 user scripts API” flag at <code>chrome://flags/#extension-user-scripts</code>
+        (Chrome 120+) and restart the browser.
+      </p>
+    </section>
+
+    <section class="add-script">
+      <h2>Add Script</h2>
+      <form id="add-script-form">
+        <label for="script-url">Raw GitHub URL</label>
+        <input id="script-url" type="url" placeholder="https://raw.githubusercontent.com/..." required />
+        <div class="add-actions">
+          <button type="submit">Fetch &amp; Save</button>
+          <button type="button" id="import-from-file">Import Local Script</button>
+        </div>
+      </form>
+      <input id="script-file" type="file" accept=".user.js,.js,text/javascript" hidden />
+      <p class="hint">The script should include a standard userscript metadata block with @match entries. Local files require "Allow access to file URLs" for this extension.</p>
+    </section>
+
+    <section class="scripts-list">
+      <h2>Installed Scripts</h2>
+      <div id="scripts"></div>
+      <template id="script-row">
+        <article class="script">
+          <div class="script__header">
+            <h3 class="script__name"></h3>
+            <label class="switch">
+              <input type="checkbox" class="script__toggle" />
+              <span class="slider"></span>
+            </label>
+          </div>
+          <p class="script__meta"></p>
+          <p class="script__matches"></p>
+          <div class="script__actions">
+            <button class="refresh">Refresh</button>
+            <button class="remove">Remove</button>
+          </div>
+        </article>
+      </template>
+      <p id="empty-state" class="empty">No scripts added yet.</p>
+    </section>
+
+    <section class="log" hidden>
+      <h2>Log</h2>
+      <pre id="log-output"></pre>
+    </section>
+  </main>
+  <script type="module" src="options.js"></script>
+</body>
+</html>

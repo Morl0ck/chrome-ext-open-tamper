@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Open Tamper</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <main class="popup">
+    <header class="toolbar">
+      <h1>Open Tamper</h1>
+      <div class="toolbar__actions">
+        <button id="run-matching" class="toolbar__run" disabled>
+          <img src="icons/play.svg" alt="" class="toolbar__run-icon" />
+        </button>
+        <button id="refresh-view" class="icon-button" title="Reload scripts" aria-label="Reload scripts">
+          <img src="icons/refresh.svg" alt="" />
+        </button>
+        <button id="open-options" class="icon-button" title="Open options page" aria-label="Open options">
+          <img src="icons/settings.svg" alt="" />
+        </button>
+      </div>
+    </header>
+
+    <section id="popup-warning" class="panel warning" hidden="true">
+      <h2>User Script API Disabled</h2>
+      <p>
+        Chrome is missing the <code>chrome.userScripts</code> API, so scripts cannot auto-run. Enable the
+        “Enable extension manifest V3 user scripts API” flag at <code>chrome://flags/#extension-user-scripts</code>
+        and restart Chrome (Chrome 120+), then reload this extension.
+      </p>
+    </section>
+
+    <section class="panel scripts">
+      <header class="scripts__header">
+        <h2>Installed Scripts</h2>
+      </header>
+      <div id="scripts" class="scripts__list"></div>
+      <template id="script-item">
+        <article class="script">
+          <label class="script__toggle-wrapper" title="Enable or disable script">
+            <input type="checkbox" class="script__toggle" />
+            <span class="script__toggle-visual"></span>
+          </label>
+          <h3 class="script__name"></h3>
+          <button class="script__run" title="Run this script" aria-label="Run this script">
+            <img src="icons/play.svg" alt="" />
+          </button>
+        </article>
+      </template>
+      <p id="empty" class="empty">No scripts match this page.</p>
+    </section>
+  </main>
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

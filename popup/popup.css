@@ -1,0 +1,261 @@
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #0c1018;
+  color: #e2e8f0;
+  overflow: hidden;
+}
+
+body::-webkit-scrollbar,
+.scripts__list::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+.popup {
+  width: 360px;
+  padding: 18px;
+  background: #10141f;
+  color: inherit;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.toolbar h1 {
+  margin: 0;
+  font-size: 13px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: #94a3b8;
+}
+
+.toolbar__actions {
+  display: flex;
+  gap: 8px;
+}
+
+.toolbar__run {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: rgba(59, 130, 246, 0.22);
+  border: 1px solid rgba(59, 130, 246, 0.32);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.toolbar__run:hover:not(:disabled) {
+  background: rgba(59, 130, 246, 0.32);
+}
+
+.toolbar__run:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.toolbar__run-icon {
+  width: 14px;
+  height: 14px;
+  filter: brightness(0) invert(1);
+}
+
+.panel {
+  background: rgba(15, 20, 33, 0.8);
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 12px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.panel h2 {
+  margin: 0;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #cbd5f5;
+}
+
+.panel.warning {
+  background: rgba(191, 64, 64, 0.16);
+  border-color: rgba(248, 113, 113, 0.4);
+  color: #fecaca;
+}
+
+.panel.warning h2 {
+  color: inherit;
+}
+
+.panel.warning p {
+  color: #fee2e2;
+}
+
+button {
+  border: none;
+  border-radius: 10px;
+  background: rgba(59, 130, 246, 0.16);
+  color: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 12px;
+  cursor: pointer;
+  transition: background 0.15s ease, transform 0.15s ease, opacity 0.15s ease;
+}
+
+button:hover:not(:disabled) {
+  background: rgba(59, 130, 246, 0.28);
+  transform: translateY(-1px);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+  transform: none;
+}
+
+.icon-button {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: rgba(12, 16, 24, 0.8);
+  border: 1px solid rgba(71, 85, 105, 0.5);
+}
+
+.icon-button img {
+  width: 16px;
+  height: 16px;
+  filter: brightness(0) invert(1);
+}
+
+.icon-button:hover:not(:disabled) {
+  border-color: rgba(96, 165, 250, 0.7);
+  background: rgba(37, 99, 235, 0.22);
+}
+
+.scripts__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.scripts__header h2 {
+  margin: 0;
+}
+
+.scripts__list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.script {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+}
+
+.script:last-child {
+  border-bottom: none;
+}
+
+.script__name {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: #f8fafc;
+}
+
+.script--disabled .script__name {
+  color: #64748b;
+}
+
+.empty {
+  margin: 0;
+  font-size: 12px;
+  color: #64748b;
+}
+
+.script__toggle-wrapper {
+  position: relative;
+  width: 38px;
+  min-width: 38px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 38px;
+}
+
+.script__toggle {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.script__toggle-visual {
+  position: absolute;
+  inset: 0;
+  background: rgba(148, 163, 184, 0.32);
+  border-radius: 999px;
+  transition: background 0.2s ease;
+}
+
+.script__toggle-visual::before {
+  content: "";
+  position: absolute;
+  left: 2px;
+  top: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #e2e8f0;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.4);
+  transition: transform 0.2s ease, background 0.2s ease;
+}
+
+.script__toggle:checked + .script__toggle-visual {
+  background: rgba(34, 197, 94, 0.48);
+}
+
+.script__toggle:checked + .script__toggle-visual::before {
+  transform: translateX(18px);
+  background: #4ade80;
+}
+
+.script__run {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 8px;
+  background: rgba(59, 130, 246, 0.16);
+  border: 1px solid rgba(59, 130, 246, 0.26);
+}
+
+.script__run img {
+  width: 14px;
+  height: 14px;
+  filter: brightness(0) invert(1);
+}
+
+.script__run:hover:not(:disabled) {
+  background: rgba(59, 130, 246, 0.28);
+}
