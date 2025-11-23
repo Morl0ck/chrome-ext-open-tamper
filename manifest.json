@@ -4,8 +4,15 @@
   "description": "Load remote userscripts and run them on matching pages.",
   "version": "0.1.0",
   "options_page": "options/options.html",
-  "permissions": ["storage", "scripting", "tabs", "userScripts"],
-  "host_permissions": ["<all_urls>"],
+  "permissions": [
+    "storage",
+    "scripting",
+    "tabs",
+    "userScripts"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
   "background": {
     "service_worker": "background.js",
     "type": "module"

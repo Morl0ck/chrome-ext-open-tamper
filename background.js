@@ -5,7 +5,9 @@ const EVENT_PREFIX = "openTamper:run:";
 const RUNNER_PREFIX = "__openTamperRunner_";
 
 const compiledPatternsCache = new Map();
-const supportsUserScripts = Boolean(chrome.userScripts && typeof chrome.userScripts.register === "function");
+const supportsUserScripts = Boolean(
+  chrome.userScripts && typeof chrome.userScripts.register === "function"
+);
 let warnedUserScriptsMissing = false;
 
 function patternToRegex(pattern) {
@@ -120,10 +122,38 @@ function wrapScriptCode(script) {
     });
   };
 
+  const executeScript = () => {
+    try {
+${requireBlock}${indentedSource}
+    } catch (error) {
+      console.error("[OpenTamper] script execution failed", error);
+    }
+  };
+
   const run = () => {
     try {
       ensureAddStyle();
-${requireBlock}${indentedSource}
+      
+      const runAt = ${JSON.stringify(script.runAt || "document_idle")};
+      
+      if (runAt === 'document_start') {
+        // Run immediately for document-start
+        executeScript();
+      } else if (runAt === 'document_end' || runAt === 'document-end') {
+        // Wait for DOMContentLoaded
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', executeScript, { once: true });
+        } else {
+          executeScript();
+        }
+      } else {
+        // document_idle/document-idle: wait for full load
+        if (document.readyState === 'complete') {
+          executeScript();
+        } else {
+          window.addEventListener('load', executeScript, { once: true });
+        }
+      }
     } catch (error) {
       console.error("[OpenTamper] script execution failed", error);
     }
@@ -148,7 +178,9 @@ async function syncUserScripts() {
 
   if (!supportsUserScripts) {
     if (!warnedUserScriptsMissing) {
-      console.warn("chrome.userScripts API is unavailable; scripts will not auto-run automatically.");
+      console.warn(
+        "chrome.userScripts API is unavailable; scripts will not auto-run automatically."
+      );
       warnedUserScriptsMissing = true;
     }
     return;
@@ -171,7 +203,13 @@ async function syncUserScripts() {
   }
 
   const registrations = scripts
-    .filter((script) => script && script.enabled !== false && Array.isArray(script.matches) && script.matches.length > 0)
+    .filter(
+      (script) =>
+        script &&
+        script.enabled !== false &&
+        Array.isArray(script.matches) &&
+        script.matches.length > 0
+    )
     .map((script) => {
       const code = wrapScriptCode(script);
       const registration = {
@@ -180,7 +218,7 @@ async function syncUserScripts() {
         excludeMatches: Array.isArray(script.excludes) ? script.excludes : [],
         js: [{ code }],
         runAt: script.runAt || "document_idle",
-        world: "MAIN"
+        world: "MAIN",
       };
       if (script.matchAboutBlank) {
         registration.matchAboutBlank = true;
@@ -204,11 +242,19 @@ async function syncUserScripts() {
   }
 }
 
-async function injectScriptIntoTab(tabId, script) {
+async function injectScriptIntoTab(tabId, script, { frameId, allFrames } = {}) {
   const payload = wrapScriptCode(script);
+
+  const target =
+    typeof frameId === "number"
+      ? { tabId, frameIds: [frameId] }
+      : allFrames
+      ? { tabId, allFrames: true }
+      : { tabId };
+
   try {
     await chrome.scripting.executeScript({
-      target: { tabId },
+      target,
       world: "MAIN",
       func: (code) => {
         try {
@@ -217,7 +263,7 @@ async function injectScriptIntoTab(tabId, script) {
           console.error("[OpenTamper] injection failed", error);
         }
       },
-      args: [payload]
+      args: [payload],
     });
     return true;
   } catch (error) {
@@ -226,11 +272,19 @@ async function injectScriptIntoTab(tabId, script) {
   }
 }
 
-async function dispatchRunEvent(tabId, scriptId) {
+async function dispatchRunEvent(tabId, scriptId, { frameId, allFrames } = {}) {
   const eventName = `${EVENT_PREFIX}${scriptId}`;
+
+  const target =
+    typeof frameId === "number"
+      ? { tabId, frameIds: [frameId] }
+      : allFrames
+      ? { tabId, allFrames: true }
+      : { tabId };
+
   try {
     await chrome.scripting.executeScript({
-      target: { tabId },
+      target,
       world: "MAIN",
       func: (name) => {
         try {
@@ -246,7 +300,7 @@ async function dispatchRunEvent(tabId, scriptId) {
           console.error("[OpenTamper] dispatch failed", error);
         }
       },
-      args: [eventName]
+      args: [eventName],
     });
     return true;
   } catch (error) {
@@ -255,7 +309,7 @@ async function dispatchRunEvent(tabId, scriptId) {
   }
 }
 
-async function runScriptsForTab(tabId, url, { scriptId, force } = {}) {
+async function runScriptsForTab(tabId, url, { scriptId, force, frameId } = {}) {
   if (!url || url.startsWith("chrome://") || url.startsWith("edge://")) {
     return [];
   }
@@ -286,21 +340,55 @@ async function runScriptsForTab(tabId, url, { scriptId, force } = {}) {
 
   const ran = [];
   for (const script of targets) {
+    const targetFrames = {
+      frameId,
+      // fall back to allFrames when we do not have a specific frame
+      allFrames: typeof frameId !== "number" && script.allFrames === true,
+    };
+
     if (force) {
-      const injected = await injectScriptIntoTab(tabId, script);
+      const injected = await injectScriptIntoTab(tabId, script, targetFrames);
       if (injected) {
         ran.push(script.id);
         continue;
       }
     }
 
-    const ok = await dispatchRunEvent(tabId, script.id);
+    const ok = await dispatchRunEvent(tabId, script.id, targetFrames);
     if (ok) {
       ran.push(script.id);
     }
   }
   return ran;
 }
+
+// if (chrome.webNavigation && chrome.webNavigation.onCompleted) {
+//   chrome.webNavigation.onCompleted.addListener((details) => {
+//     try {
+//       if (!details || !details.tabId || !details.url) return;
+//       runScriptsForTab(details.tabId, details.url, {
+//         frameId: details.frameId,
+//         force: !supportsUserScripts,
+//       }).catch((e) => console.warn("Frame injection failed", e));
+//     } catch (e) {
+//       console.warn("webNavigation onCompleted handler error", e);
+//     }
+//   });
+// }
+
+// if (chrome.webNavigation && chrome.webNavigation.onHistoryStateUpdated) {
+//   chrome.webNavigation.onHistoryStateUpdated.addListener((details) => {
+//     try {
+//       if (!details || !details.tabId || !details.url) return;
+//       runScriptsForTab(details.tabId, details.url, {
+//         frameId: details.frameId,
+//         force: !supportsUserScripts,
+//       }).catch((e) => console.warn("History-state injection failed", e));
+//     } catch (e) {
+//       console.warn("webNavigation onHistoryStateUpdated handler error", e);
+//     }
+//   });
+// }
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== "local" || !changes[STORAGE_KEY]) {
@@ -337,7 +425,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         throw new Error("Tab has no URL");
       }
 
-      const executedIds = await runScriptsForTab(tabId, targetUrl, { scriptId, force });
+      const executedIds = await runScriptsForTab(tabId, targetUrl, {
+        scriptId,
+        force,
+      });
       sendResponse?.({ ok: true, ran: executedIds });
     } catch (error) {
       console.warn("User-triggered execution failed", error);
