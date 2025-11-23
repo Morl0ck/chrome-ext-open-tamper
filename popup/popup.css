@@ -1,8 +1,34 @@
+:root {
+  --bg: #f6f8fb;
+  --panel-bg: rgba(255, 255, 255, 0.9);
+  --container-bg: #ffffff;
+  --text: #0f1724;
+  --muted: #94a3b8;
+  --panel-border: rgba(148, 163, 184, 0.14);
+  --accent: rgba(59, 130, 246, 0.22);
+  --accent-strong: rgba(59, 130, 246, 0.32);
+  --success: rgba(34, 197, 94, 0.48);
+  --danger: rgba(191, 64, 64, 0.16);
+}
+
+[data-theme="dark"] {
+  --bg: #0c1018;
+  --panel-bg: rgba(15, 20, 33, 0.8);
+  --container-bg: #10141f;
+  --text: #e2e8f0;
+  --muted: #94a3b8;
+  --panel-border: rgba(148, 163, 184, 0.14);
+  --accent: rgba(59, 130, 246, 0.22);
+  --accent-strong: rgba(59, 130, 246, 0.32);
+  --success: rgba(34, 197, 94, 0.48);
+  --danger: rgba(191, 64, 64, 0.16);
+}
+
 body {
   margin: 0;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  background: #0c1018;
-  color: #e2e8f0;
+  background: var(--bg);
+  color: var(--text);
   overflow: hidden;
 }
 
@@ -15,7 +41,7 @@ body::-webkit-scrollbar,
 .popup {
   width: 360px;
   padding: 18px;
-  background: #10141f;
+  background: var(--container-bg);
   color: inherit;
   display: flex;
   flex-direction: column;
@@ -33,7 +59,7 @@ body::-webkit-scrollbar,
   font-size: 13px;
   letter-spacing: 0.18em;
   text-transform: uppercase;
-  color: #94a3b8;
+  color: var(--muted);
 }
 
 .toolbar__actions {
@@ -69,8 +95,8 @@ body::-webkit-scrollbar,
 }
 
 .panel {
-  background: rgba(15, 20, 33, 0.8);
-  border: 1px solid rgba(148, 163, 184, 0.14);
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
   border-radius: 12px;
   padding: 16px;
   display: flex;
@@ -83,11 +109,11 @@ body::-webkit-scrollbar,
   font-size: 11px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: #cbd5f5;
+  color: var(--text);
 }
 
 .panel.warning {
-  background: rgba(191, 64, 64, 0.16);
+  background: var(--danger);
   border-color: rgba(248, 113, 113, 0.4);
   color: #fecaca;
 }
@@ -103,7 +129,7 @@ body::-webkit-scrollbar,
 button {
   border: none;
   border-radius: 10px;
-  background: rgba(59, 130, 246, 0.16);
+  background: var(--accent);
   color: inherit;
   font-size: 12px;
   font-weight: 600;
@@ -113,7 +139,7 @@ button {
 }
 
 button:hover:not(:disabled) {
-  background: rgba(59, 130, 246, 0.28);
+  background: var(--accent-strong);
   transform: translateY(-1px);
 }
 
@@ -131,19 +157,18 @@ button:disabled {
   align-items: center;
   justify-content: center;
   border-radius: 8px;
-  background: rgba(12, 16, 24, 0.8);
-  border: 1px solid rgba(71, 85, 105, 0.5);
+  background: rgba(12, 16, 24, 0.08);
+  border: 1px solid rgba(71, 85, 105, 0.12);
 }
 
 .icon-button img {
   width: 16px;
   height: 16px;
-  filter: brightness(0) invert(1);
 }
 
 .icon-button:hover:not(:disabled) {
-  border-color: rgba(96, 165, 250, 0.7);
-  background: rgba(37, 99, 235, 0.22);
+  border-color: rgba(96, 165, 250, 0.24);
+  background: rgba(37, 99, 235, 0.12);
 }
 
 .scripts__header {
@@ -179,17 +204,17 @@ button:disabled {
   margin: 0;
   font-size: 13px;
   font-weight: 500;
-  color: #f8fafc;
+  color: var(--text);
 }
 
 .script--disabled .script__name {
-  color: #64748b;
+  color: var(--muted);
 }
 
 .empty {
   margin: 0;
   font-size: 12px;
-  color: #64748b;
+  color: var(--muted);
 }
 
 .script__toggle-wrapper {
@@ -224,13 +249,13 @@ button:disabled {
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  background: #e2e8f0;
+  background: var(--text);
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.4);
   transition: transform 0.2s ease, background 0.2s ease;
 }
 
 .script__toggle:checked + .script__toggle-visual {
-  background: rgba(34, 197, 94, 0.48);
+  background: var(--success);
 }
 
 .script__toggle:checked + .script__toggle-visual::before {
@@ -246,16 +271,24 @@ button:disabled {
   height: 28px;
   padding: 0;
   border-radius: 8px;
-  background: rgba(59, 130, 246, 0.16);
+  background: var(--accent);
   border: 1px solid rgba(59, 130, 246, 0.26);
 }
 
 .script__run img {
   width: 14px;
   height: 14px;
-  filter: brightness(0) invert(1);
 }
 
 .script__run:hover:not(:disabled) {
   background: rgba(59, 130, 246, 0.28);
+}
+
+/* Icon coloring: invert icons in dark theme where appropriate */
+[data-theme="dark"] img {
+  filter: brightness(0) invert(1);
+}
+
+[data-theme="light"] img {
+  filter: none;
 }

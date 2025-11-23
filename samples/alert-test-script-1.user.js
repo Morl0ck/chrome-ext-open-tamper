@@ -5,6 +5,7 @@
 // @description  Automatically skips the intro on Crunchyroll videos (enabled by default).
 // @author       Morl0ck
 // @match        https://*.github.com/*
+// @match        https://github.com/*
 // @run-at       document-start
 // @grant        none
 // ==/UserScript==
