@@ -1,4 +1,8 @@
-const STORAGE_KEY = "openTamperScripts";
+import {
+  STORAGE_KEY,
+  loadScriptsFromStorage,
+  persistScripts,
+} from "../common/storage.js";
 
 const addScriptForm = document.getElementById("add-script-form");
 const urlInput = document.getElementById("script-url");
@@ -9,7 +13,9 @@ const warningBlock = document.getElementById("userscripts-warning");
 const importFileButton = document.getElementById("import-from-file");
 const fileInput = document.getElementById("script-file");
 
-const supportsUserScripts = Boolean(chrome.userScripts && typeof chrome.userScripts.register === "function");
+const supportsUserScripts = Boolean(
+  chrome.userScripts && typeof chrome.userScripts.register === "function"
+);
 
 if (warningBlock) {
   warningBlock.hidden = supportsUserScripts;
@@ -44,9 +50,10 @@ if (importFileButton && fileInput) {
 
     try {
       const code = await readFileAsText(file);
-      const relativePath = (file.webkitRelativePath && file.webkitRelativePath.length > 0)
-        ? file.webkitRelativePath
-        : file.name;
+      const relativePath =
+        file.webkitRelativePath && file.webkitRelativePath.length > 0
+          ? file.webkitRelativePath
+          : file.name;
       const normalizedPath = relativePath.replace(/\\/g, "/");
       const sourceUrl = `file:///${encodeURI(normalizedPath)}`;
 
@@ -55,11 +62,13 @@ if (importFileButton && fileInput) {
         sourceUrl,
         existingId: pendingReplaceId,
         sourceType: "local",
-        fileName: file.name
+        fileName: file.name,
       });
 
       if (pendingReplaceId) {
-        const index = scripts.findIndex((script) => script.id === pendingReplaceId);
+        const index = scripts.findIndex(
+          (script) => script.id === pendingReplaceId
+        );
         if (index >= 0) {
           const enabled = scripts[index].enabled;
           scripts[index] = { ...newScript, enabled };
@@ -70,7 +79,7 @@ if (importFileButton && fileInput) {
         scripts.push(newScript);
       }
 
-      await persistScripts();
+      await persistScripts(scripts);
       renderScripts();
     } catch (error) {
       console.error(error);
@@ -90,24 +99,7 @@ if (importFileButton && fileInput) {
 let scripts = [];
 
 async function loadScripts() {
-  const stored = await chrome.storage.local.get(STORAGE_KEY);
-  const raw = Array.isArray(stored[STORAGE_KEY]) ? stored[STORAGE_KEY] : [];
-  scripts = raw.map((entry) => ({
-    ...entry,
-    matches: Array.isArray(entry.matches) ? entry.matches : [],
-    excludes: Array.isArray(entry.excludes) ? entry.excludes : [],
-    runAt: entry.runAt || "document_idle",
-    noframes: Boolean(entry.noframes),
-    allFrames: Boolean(entry.allFrames),
-    matchAboutBlank: Boolean(entry.matchAboutBlank),
-    requires: Array.isArray(entry.requires) ? entry.requires : [],
-    sourceType: entry.sourceType || "remote",
-    fileName: entry.fileName || null
-  }));
-}
-
-async function persistScripts() {
-  await chrome.storage.local.set({ [STORAGE_KEY]: scripts });
+  scripts = await loadScriptsFromStorage();
 }
 
 function parseMetadata(code) {
@@ -119,7 +111,10 @@ function parseMetadata(code) {
 
   const lines = match[1].split(/\r?\n/);
   for (const line of lines) {
-    const trimmed = line.trim().replace(/^\/\/\s?/, "").replace(/^\*\s?/, "");
+    const trimmed = line
+      .trim()
+      .replace(/^\/\/\s?/, "")
+      .replace(/^\*\s?/, "");
     if (!trimmed.startsWith("@")) {
       continue;
     }
@@ -163,7 +158,10 @@ function deriveRunAt(meta) {
   if (normalized.includes("document-start")) {
     return "document_start";
   }
-  if (normalized.includes("document-end") || normalized.includes("document-ready")) {
+  if (
+    normalized.includes("document-end") ||
+    normalized.includes("document-ready")
+  ) {
     return "document_end";
   }
   if (normalized.includes("document-idle")) {
@@ -241,18 +239,28 @@ async function resolveRequires(meta, baseUrl) {
       const code = await response.text();
       resolved.push({ url: resolvedUrl, code });
     } catch (error) {
-      throw new Error(`Failed to load @require ${resolvedUrl}: ${error.message || error}`);
+      throw new Error(
+        `Failed to load @require ${resolvedUrl}: ${error.message || error}`
+      );
     }
   }
 
   return resolved;
 }
 
-async function buildScriptFromCode({ code, sourceUrl, existingId, sourceType, fileName }) {
+async function buildScriptFromCode({
+  code,
+  sourceUrl,
+  existingId,
+  sourceType,
+  fileName,
+}) {
   const meta = parseMetadata(code);
   const matches = deriveMatches(meta);
   const name = deriveName(meta, sourceUrl || fileName || "local-file");
-  const description = Array.isArray(meta.description) ? meta.description[0] : "";
+  const description = Array.isArray(meta.description)
+    ? meta.description[0]
+    : "";
   const runAt = deriveRunAt(meta);
   const noframes = deriveNoFrames(meta);
   const allFrames = deriveAllFrames(meta);
@@ -275,7 +283,7 @@ async function buildScriptFromCode({ code, sourceUrl, existingId, sourceType, fi
     matchAboutBlank,
     requires,
     sourceType: sourceType || "remote",
-    fileName: fileName || null
+    fileName: fileName || null,
   };
 }
 
@@ -297,34 +305,45 @@ function renderScripts() {
     const refreshBtn = node.querySelector(".refresh");
 
     nameEl.textContent = script.name;
-    const updated = script.lastUpdated ? new Date(script.lastUpdated).toLocaleString() : "n/a";
-    const sourceLabel = script.sourceType === "local"
-      ? `Local file: ${script.fileName || script.url || "(unknown)"}`
-      : script.url;
-    const requiresDetail = script.requires && script.requires.length > 0
-      ? `\nRequires: ${script.requires.map((item) => item.url || "(unknown)").join(", ")}`
-      : "";
+    const updated = script.lastUpdated
+      ? new Date(script.lastUpdated).toLocaleString()
+      : "n/a";
+    const sourceLabel =
+      script.sourceType === "local"
+        ? `Local file: ${script.fileName || script.url || "(unknown)"}`
+        : script.url;
+    const requiresDetail =
+      script.requires && script.requires.length > 0
+        ? `\nRequires: ${script.requires
+            .map((item) => item.url || "(unknown)")
+            .join(", ")}`
+        : "";
     metaEl.textContent = `Source: ${sourceLabel}\nUpdated: ${updated}${requiresDetail}`;
     const matchesLine = `Matches: ${script.matches.join(", ")}`;
-    const excludesLine = script.excludes && script.excludes.length > 0
-      ? ` | Excludes: ${script.excludes.join(", ")}`
-      : "";
+    const excludesLine =
+      script.excludes && script.excludes.length > 0
+        ? ` | Excludes: ${script.excludes.join(", ")}`
+        : "";
     const runAtLabel = script.runAt?.replace(/_/g, "-") || "document-idle";
     const framesLabel = script.allFrames
       ? "all frames"
       : script.noframes
-        ? "top frame only"
-        : "top frame";
+      ? "top frame only"
+      : "top frame";
     const framesSuffix = framesLabel ? ` | Frames: ${framesLabel}` : "";
     const aboutBlankSuffix = script.matchAboutBlank ? " | about:blank" : "";
-    const requiresSuffix = script.requires && script.requires.length > 0 ? ` | Requires: ${script.requires.length}` : "";
+    const requiresSuffix =
+      script.requires && script.requires.length > 0
+        ? ` | Requires: ${script.requires.length}`
+        : "";
     matchesEl.textContent = `${matchesLine}${excludesLine} | Run at: ${runAtLabel}${framesSuffix}${aboutBlankSuffix}${requiresSuffix}`;
     toggleEl.checked = script.enabled;
-    refreshBtn.textContent = script.sourceType === "local" ? "Reimport" : "Refresh";
+    refreshBtn.textContent =
+      script.sourceType === "local" ? "Reimport" : "Refresh";
 
     toggleEl.addEventListener("change", async () => {
       script.enabled = toggleEl.checked;
-      await persistScripts();
+      await persistScripts(scripts);
     });
 
     removeBtn.addEventListener("click", async () => {
@@ -333,7 +352,7 @@ function renderScripts() {
         return;
       }
       scripts = scripts.filter((item) => item.id !== script.id);
-      await persistScripts();
+      await persistScripts(scripts);
       renderScripts();
     });
 
@@ -353,7 +372,7 @@ function renderScripts() {
         const wasEnabled = script.enabled;
         Object.assign(script, updatedScript);
         script.enabled = wasEnabled;
-        await persistScripts();
+        await persistScripts(scripts);
         renderScripts();
       } catch (error) {
         console.error(error);
@@ -381,7 +400,7 @@ async function fetchAndBuildScript(url, existingId) {
     code,
     sourceUrl: url,
     existingId,
-    sourceType: "remote"
+    sourceType: "remote",
   });
 }
 
@@ -389,7 +408,8 @@ function readFileAsText(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result ?? ""));
-    reader.onerror = () => reject(reader.error || new Error("Unable to read file"));
+    reader.onerror = () =>
+      reject(reader.error || new Error("Unable to read file"));
     reader.readAsText(file);
   });
 }
@@ -407,17 +427,19 @@ addScriptForm.addEventListener("submit", async (event) => {
 
   try {
     const newScript = await fetchAndBuildScript(url);
-    const existingIndex = scripts.findIndex((script) => script.url === newScript.url);
+    const existingIndex = scripts.findIndex(
+      (script) => script.url === newScript.url
+    );
     if (existingIndex >= 0) {
       scripts[existingIndex] = {
         ...scripts[existingIndex],
         ...newScript,
-        enabled: scripts[existingIndex].enabled
+        enabled: scripts[existingIndex].enabled,
       };
     } else {
       scripts.push(newScript);
     }
-    await persistScripts();
+    await persistScripts(scripts);
     urlInput.value = "";
     renderScripts();
   } catch (error) {

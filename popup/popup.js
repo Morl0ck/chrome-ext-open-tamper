@@ -1,6 +1,9 @@
 import { compileMatchPattern } from "../common/patterns.js";
-
-const STORAGE_KEY = "openTamperScripts";
+import {
+  STORAGE_KEY,
+  loadScriptsFromStorage,
+  persistScripts,
+} from "../common/storage.js";
 
 const runMatchingButton = document.getElementById("run-matching");
 const scriptsContainer = document.getElementById("scripts");
@@ -14,7 +17,9 @@ const patternCache = new Map();
 
 let scripts = [];
 let activeTab = null;
-const supportsUserScripts = Boolean(chrome.userScripts && typeof chrome.userScripts.register === "function");
+const supportsUserScripts = Boolean(
+  chrome.userScripts && typeof chrome.userScripts.register === "function"
+);
 
 if (warningSection) {
   warningSection.style.display = supportsUserScripts ? "none" : "block";
@@ -29,25 +34,6 @@ function patternToRegex(pattern) {
     patternCache.set(pattern, compiled);
   }
   return compiled;
-}
-
-function sanitizeScripts(raw) {
-  if (!Array.isArray(raw)) {
-    return [];
-  }
-  return raw.map((entry) => ({
-    ...entry,
-    matches: Array.isArray(entry.matches) ? entry.matches : [],
-    excludes: Array.isArray(entry.excludes) ? entry.excludes : [],
-    enabled: entry.enabled !== false,
-    runAt: entry.runAt || "document_idle",
-    noframes: Boolean(entry.noframes),
-    allFrames: Boolean(entry.allFrames),
-    matchAboutBlank: Boolean(entry.matchAboutBlank),
-    requires: Array.isArray(entry.requires) ? entry.requires : [],
-    sourceType: entry.sourceType || "remote",
-    fileName: entry.fileName || null
-  }));
 }
 
 function matchesUrl(script, url) {
@@ -88,13 +74,9 @@ function getScriptsForCurrentTab() {
   return scripts.filter((script) => matchesUrl(script, url));
 }
 
-async function loadScriptsFromStorage() {
-  const stored = await chrome.storage.local.get(STORAGE_KEY);
-  scripts = sanitizeScripts(stored[STORAGE_KEY]);
-}
-
-async function persistScripts() {
-  await chrome.storage.local.set({ [STORAGE_KEY]: scripts });
+// Load scripts into `scripts` from storage helper
+async function loadFromStorage() {
+  scripts = await loadScriptsFromStorage();
 }
 
 function renderScriptsList() {
@@ -107,7 +89,10 @@ function renderScriptsList() {
     return;
   }
 
-  if (activeTab.url.startsWith("chrome://") || activeTab.url.startsWith("edge://")) {
+  if (
+    activeTab.url.startsWith("chrome://") ||
+    activeTab.url.startsWith("edge://")
+  ) {
     emptyState.hidden = false;
     emptyState.textContent = "Scripts cannot run on this page.";
     runMatchingButton.disabled = true;
@@ -141,7 +126,7 @@ function renderScriptsList() {
 
     toggleEl.addEventListener("change", async () => {
       script.enabled = toggleEl.checked;
-      await persistScripts();
+      await persistScripts(scripts);
       article.classList.toggle("script--disabled", !script.enabled);
       runBtn.disabled = !script.enabled;
       const hasEnabled = getScriptsForCurrentTab().some((item) => item.enabled);
@@ -159,7 +144,7 @@ function renderScriptsList() {
           tabId: activeTab.id,
           url: activeTab.url,
           scriptId: script.id,
-          force: true
+          force: true,
         });
         if (!response?.ok) {
           console.warn("Manual run failed", response?.error);
@@ -177,12 +162,15 @@ function renderScriptsList() {
 
 async function refreshView() {
   patternCache.clear();
-  await loadScriptsFromStorage();
+  await loadFromStorage();
   renderScriptsList();
 }
 
 async function initActiveTab() {
-  const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  const [tab] = await chrome.tabs.query({
+    active: true,
+    lastFocusedWindow: true,
+  });
   if (tab) {
     activeTab = tab;
   } else {
@@ -200,7 +188,7 @@ runMatchingButton.addEventListener("click", async () => {
       type: "openTamper:runScriptsForTab",
       tabId: activeTab.id,
       url: activeTab.url,
-      force: true
+      force: true,
     });
     if (!response?.ok) {
       console.warn("Unable to run scripts", response?.error);
