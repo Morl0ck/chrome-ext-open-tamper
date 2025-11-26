@@ -1,6 +1,11 @@
 import { compileMatchPattern } from "./common/patterns.js";
-
-const STORAGE_KEY = "openTamperScripts";
+import {
+  STORAGE_KEY,
+  loadScriptsFromStorage,
+  propagateLocalScriptsToSync,
+  applySyncScriptsToLocal,
+  restoreScriptsFromSyncIfNeeded,
+} from "./common/storage.js";
 const EVENT_PREFIX = "openTamper:run:";
 const RUNNER_PREFIX = "__openTamperRunner_";
 
@@ -47,12 +52,6 @@ function matchesUrl(script, url) {
   }
 
   return true;
-}
-
-async function getStoredScripts() {
-  const stored = await chrome.storage.local.get(STORAGE_KEY);
-  const scripts = stored[STORAGE_KEY];
-  return Array.isArray(scripts) ? scripts : [];
 }
 
 function wrapScriptCode(script) {
@@ -188,7 +187,7 @@ async function syncUserScripts() {
 
   let scripts = [];
   try {
-    scripts = await getStoredScripts();
+    scripts = await loadScriptsFromStorage();
   } catch (error) {
     console.warn("Unable to read stored scripts", error);
     scripts = [];
@@ -314,7 +313,7 @@ async function runScriptsForTab(tabId, url, { scriptId, force, frameId } = {}) {
     return [];
   }
 
-  const scripts = await getStoredScripts();
+  const scripts = await loadScriptsFromStorage();
 
   let targets = [];
   if (scriptId) {
@@ -391,19 +390,40 @@ async function runScriptsForTab(tabId, url, { scriptId, force, frameId } = {}) {
 // }
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
-  if (areaName !== "local" || !changes[STORAGE_KEY]) {
+  if (areaName === "local" && changes[STORAGE_KEY]) {
+    propagateLocalScriptsToSync(changes[STORAGE_KEY].newValue).catch((error) => {
+      console.warn("[OpenTamper] syncing scripts to sync storage failed", error);
+    });
+    syncUserScripts().catch((error) => {
+      console.warn("[OpenTamper] user script sync failed", error);
+    });
     return;
   }
-  syncUserScripts();
+
+  if (areaName === "sync" && changes[STORAGE_KEY]) {
+    applySyncScriptsToLocal(changes[STORAGE_KEY].newValue).catch((error) => {
+      console.warn("[OpenTamper] failed to propagate sync storage changes", error);
+    });
+  }
 });
 
 chrome.runtime.onInstalled.addListener(() => {
-  syncUserScripts();
+  (async () => {
+    await restoreScriptsFromSyncIfNeeded();
+    await syncUserScripts();
+  })().catch((error) => {
+    console.warn("[OpenTamper] onInstalled initialization failed", error);
+  });
 });
 
 if (chrome.runtime.onStartup) {
   chrome.runtime.onStartup.addListener(() => {
-    syncUserScripts();
+    (async () => {
+      await restoreScriptsFromSyncIfNeeded();
+      await syncUserScripts();
+    })().catch((error) => {
+      console.warn("[OpenTamper] onStartup initialization failed", error);
+    });
   });
 }
 
@@ -439,6 +459,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return true;
 });
 
-syncUserScripts().catch((error) => {
-  console.warn("Initial user script sync failed", error);
-});
+restoreScriptsFromSyncIfNeeded()
+  .catch((error) => {
+    console.warn("[OpenTamper] initial restore from sync storage failed", error);
+  })
+  .finally(() => {
+    syncUserScripts().catch((error) => {
+      console.warn("Initial user script sync failed", error);
+    });
+  });
