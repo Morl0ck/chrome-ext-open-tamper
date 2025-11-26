@@ -41,6 +41,9 @@
             <button type="button" id="import-from-file">
               Import Local Script
             </button>
+            <button type="button" id="import-as-require">
+              Import Local As @require
+            </button>
           </div>
         </form>
         <input
@@ -62,14 +65,22 @@
         <template id="script-row">
           <article class="script">
             <div class="script__header">
-              <h3 class="script__name"></h3>
+              <div class="script__title">
+                <h3 class="script__name"></h3>
+                <p class="script__description"></p>
+              </div>
               <label class="switch">
                 <input type="checkbox" class="script__toggle" />
                 <span class="slider"></span>
               </label>
             </div>
-            <p class="script__meta"></p>
-            <p class="script__matches"></p>
+            <div class="script__tags"></div>
+            <div class="script__meta"></div>
+            <div class="script__routing">
+              <div class="script__matches"></div>
+              <div class="script__frames"></div>
+            </div>
+            <div class="script__requires"></div>
             <div class="script__actions">
               <button class="refresh">Refresh</button>
               <button class="remove">Remove</button>

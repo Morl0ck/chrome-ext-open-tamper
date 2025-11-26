@@ -22,6 +22,8 @@ export function sanitizeScripts(raw) {
     requires: Array.isArray(entry.requires) ? entry.requires : [],
     sourceType: entry.sourceType || "remote",
     fileName: entry.fileName || null,
+    version: entry.version || null,
+    importMode: entry.importMode || "script",
   }));
 }
 

@@ -100,6 +100,24 @@ export function deriveName(meta, url) {
   }
 }
 
+export function deriveDescription(meta) {
+  if (!Array.isArray(meta.description) || meta.description.length === 0) {
+    return "";
+  }
+  const value = meta.description[0];
+  return typeof value === "string" ? value : String(value);
+}
+
+export function deriveVersion(meta) {
+  if (!Array.isArray(meta.version) || meta.version.length === 0) {
+    return null;
+  }
+  const value = meta.version[0];
+  return typeof value === "string" ? value : String(value);
+}
+
+const COMMENTED_METADATA_BLOCK_REGEX = /\/\/\s*==UserScript==[\s\S]*?\/\/\s*==\/UserScript==/i;
+
 export async function resolveRequires(meta, baseUrl) {
   const requires = Array.isArray(meta.require) ? meta.require : [];
   if (requires.length === 0) {
@@ -152,37 +170,132 @@ export async function buildScriptFromCode({
   fileName,
 }) {
   const meta = parseMetadata(code);
-  const matches = deriveMatches(meta);
-  const name = deriveName(meta, sourceUrl || fileName || "local-file");
-  const description = Array.isArray(meta.description)
-    ? meta.description[0]
-    : "";
-  const runAt = deriveRunAt(meta);
-  const noframes = deriveNoFrames(meta);
-  const allFrames = deriveAllFrames(meta);
-  const matchAboutBlank = deriveMatchAboutBlank(meta);
   const requires = await resolveRequires(meta, sourceUrl);
+  return createScriptRecord({
+    meta,
+    code,
+    requires,
+    existingId,
+    sourceUrl,
+    sourceType,
+    fileName,
+    importMode: "script",
+  });
+}
+
+export async function buildScriptWithLocalRequire({
+  code,
+  sourceUrl,
+  existingId,
+  fileName,
+}) {
+  const { metadataLines, closingIndex } = extractMetadataLinesOrThrow(code);
+
+  const requireLine = `// @require ${sourceUrl}`;
+  const normalizedRequireLine = requireLine.toLowerCase();
+  const hasRequire = metadataLines.some(
+    (line) => line.trim().toLowerCase() === normalizedRequireLine
+  );
+  if (!hasRequire) {
+    metadataLines.splice(closingIndex, 0, requireLine);
+  }
+
+  const metadataOnly = metadataLines.join("\n");
+  const normalizedMetadata = metadataOnly.endsWith("\n")
+    ? metadataOnly
+    : `${metadataOnly}\n`;
+  const parsedMeta = parseMetadata(normalizedMetadata);
+
+  const allRequires = Array.isArray(parsedMeta.require)
+    ? [...parsedMeta.require]
+    : [];
+  const lowerSourceUrl = sourceUrl.toLowerCase();
+  const remoteRequireUrls = allRequires.filter(
+    (entry) => (entry || "").toLowerCase() !== lowerSourceUrl
+  );
+  const metaForResolution = {
+    ...parsedMeta,
+    require: remoteRequireUrls,
+  };
+  const remoteRequires = await resolveRequires(metaForResolution, sourceUrl);
+  const requires = Array.isArray(remoteRequires) ? [...remoteRequires] : [];
+  if (
+    !requires.some(
+      (item) => item && (item.url || "").toLowerCase() === lowerSourceUrl
+    )
+  ) {
+    requires.push({ url: sourceUrl, code });
+  }
+
+  return createScriptRecord({
+    meta: parsedMeta,
+    code: normalizedMetadata,
+    requires,
+    existingId,
+    sourceUrl,
+    sourceType: "local",
+    fileName,
+    importMode: "require",
+  });
+}
+
+function createScriptRecord({
+  meta,
+  code,
+  requires,
+  existingId,
+  sourceUrl,
+  sourceType,
+  fileName,
+  importMode,
+}) {
+  const derivedRequires = Array.isArray(requires) ? requires : [];
+  const resolvedSourceUrl = sourceUrl || null;
+  const resolvedFileName = fileName || null;
+  const fallbackLabel = resolvedSourceUrl || resolvedFileName || "local-file";
 
   return {
     id: existingId || crypto.randomUUID(),
-    name,
-    description,
-    url: sourceUrl,
+    name: deriveName(meta, fallbackLabel),
+    description: deriveDescription(meta),
+    url: resolvedSourceUrl,
     code,
-    matches,
+    matches: deriveMatches(meta),
     excludes: deriveExcludes(meta),
     enabled: true,
     lastUpdated: Date.now(),
-    runAt,
-    noframes,
-    allFrames,
-    matchAboutBlank,
-    requires,
+    runAt: deriveRunAt(meta),
+    noframes: deriveNoFrames(meta),
+    allFrames: deriveAllFrames(meta),
+    matchAboutBlank: deriveMatchAboutBlank(meta),
+    requires: derivedRequires,
     sourceType: sourceType || "remote",
-    fileName: fileName || null,
+    fileName: resolvedFileName,
+    version: deriveVersion(meta),
+    importMode: importMode || "script",
   };
+}
+
+function extractMetadataLinesOrThrow(code) {
+  const metadataMatch = code.match(COMMENTED_METADATA_BLOCK_REGEX);
+  if (!metadataMatch) {
+    throw new Error(
+      "The selected file does not contain a userscript metadata block."
+    );
+  }
+
+  const metadataLines = metadataMatch[0].split(/\r?\n/);
+  const closingIndex = metadataLines.findIndex((line) =>
+    /\/\/\s*==\/UserScript==/i.test(line)
+  );
+  if (closingIndex === -1) {
+    throw new Error("The userscript metadata block is malformed.");
+  }
+
+  return { metadataLines, closingIndex };
 }
 
 export default {
   buildScriptFromCode,
+  buildScriptWithLocalRequire,
 };
