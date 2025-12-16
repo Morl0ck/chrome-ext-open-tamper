@@ -29,7 +29,7 @@
       <section class="add-script">
         <h2>Add Script</h2>
         <form id="add-script-form">
-          <label for="script-url">Raw GitHub URL</label>
+          <label for="script-url">Raw GitHub URL or Repository</label>
           <input
             id="script-url"
             type="url"
@@ -59,6 +59,22 @@
         </p>
       </section>
 
+      <section class="repo-import" id="repo-import" hidden>
+        <h2>Repository Userscripts</h2>
+        <p id="repo-import-summary" class="hint"></p>
+        <div id="repo-import-list"></div>
+        <template id="repo-import-row">
+          <article class="repo-script">
+            <div class="repo-script__details">
+              <h3 class="repo-script__name"></h3>
+              <p class="repo-script__path"></p>
+            </div>
+            <button type="button" class="repo-script__import">Import</button>
+          </article>
+        </template>
+        <p id="repo-import-empty" class="empty">No userscripts found.</p>
+      </section>
+
       <section class="scripts-list">
         <h2>Installed Scripts</h2>
         <div id="scripts"></div>
@@ -81,9 +97,15 @@
               <div class="script__frames"></div>
             </div>
             <div class="script__requires"></div>
-            <div class="script__actions">
-              <button class="refresh">Refresh</button>
-              <button class="remove">Remove</button>
+            <div class="script__footer">
+              <div class="script__actions">
+                <button class="refresh">Refresh</button>
+                <button class="remove">Remove</button>
+              </div>
+              <label class="script__autoupdate" hidden>
+                <input type="checkbox" class="script__autoupdate-toggle" />
+                <span>Auto-update</span>
+              </label>
             </div>
           </article>
         </template>

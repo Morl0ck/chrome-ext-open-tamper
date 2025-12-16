@@ -17,6 +17,13 @@ const warningBlock = document.getElementById("userscripts-warning");
 const importFileButton = document.getElementById("import-from-file");
 const importAsRequireButton = document.getElementById("import-as-require");
 const fileInput = document.getElementById("script-file");
+const repoImportSection = document.getElementById("repo-import");
+const repoImportSummary = document.getElementById("repo-import-summary");
+const repoImportList = document.getElementById("repo-import-list");
+const repoImportEmpty = document.getElementById("repo-import-empty");
+const repoImportRowTemplate = document.getElementById("repo-import-row");
+const fetchButton = addScriptForm?.querySelector('button[type="submit"]');
+const defaultFetchButtonLabel = fetchButton?.textContent?.trim() || "Fetch & Save";
 
 const supportsUserScripts = Boolean(
   chrome.userScripts && typeof chrome.userScripts.register === "function"
@@ -34,6 +41,211 @@ const ImportModes = {
 };
 let fileImportMode = ImportModes.SCRIPT;
 let activeImportButton = null;
+let repoSearchContext = null;
+let repoSearchResults = [];
+
+function isGitHubUrl(url) {
+  if (!url) {
+    return false;
+  }
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return (
+      host === "github.com" ||
+      host === "www.github.com" ||
+      host.endsWith(".github.com") ||
+      host === "raw.githubusercontent.com" ||
+      host.endsWith(".githubusercontent.com")
+    );
+  } catch (error) {
+    return false;
+  }
+}
+
+function isGitHubRawUserscriptUrl(value) {
+  if (!value) {
+    return false;
+  }
+  try {
+    const parsed = new URL(value);
+    const host = parsed.hostname.toLowerCase();
+    const path = parsed.pathname.toLowerCase();
+    if (
+      host === "raw.githubusercontent.com" ||
+      host === "gist.githubusercontent.com" ||
+      host.endsWith(".githubusercontent.com")
+    ) {
+      return path.endsWith(".user.js");
+    }
+    if (host === "github.com" || host === "www.github.com") {
+      return path.includes("/raw/") && path.endsWith(".user.js");
+    }
+    return false;
+  } catch (error) {
+    return false;
+  }
+}
+
+function isLikelyFilePath(value) {
+  if (!value) {
+    return false;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return false;
+  }
+  if (/^file:\/\//i.test(trimmed)) {
+    return true;
+  }
+  if (/^[a-zA-Z]:[\\/]/.test(trimmed)) {
+    return true;
+  }
+  if (trimmed.startsWith("\\\\")) {
+    return true;
+  }
+  if (
+    trimmed.startsWith("../") ||
+    trimmed.startsWith("./") ||
+    trimmed.startsWith("~/")
+  ) {
+    return true;
+  }
+  if (!trimmed.includes("://") && trimmed.startsWith("/")) {
+    return !trimmed.startsWith("//");
+  }
+  return false;
+}
+
+// Sync action buttons with the current input type (repo/raw/file).
+function updateInputContextState() {
+  if (!urlInput) {
+    return;
+  }
+
+  const value = urlInput.value.trim();
+  const hasValue = value.length > 0;
+  const isRepoValue = hasValue && Boolean(parseGitHubRepoUrl(value));
+  const isRawValue = hasValue && isGitHubRawUserscriptUrl(value);
+  const isFileValue = hasValue && isLikelyFilePath(value);
+  const disableLocalImports = isRepoValue || isRawValue;
+  const nextFetchLabel = isRepoValue ? "Fetch" : defaultFetchButtonLabel;
+
+  if (importFileButton) {
+    importFileButton.disabled = disableLocalImports;
+  }
+  if (importAsRequireButton) {
+    importAsRequireButton.disabled = disableLocalImports;
+  }
+
+  if (fetchButton) {
+    if (fetchButton.textContent !== nextFetchLabel) {
+      fetchButton.textContent = nextFetchLabel;
+    }
+    if (isFileValue) {
+      fetchButton.disabled = true;
+    } else if (!addScriptForm.classList.contains("loading")) {
+      fetchButton.disabled = false;
+    }
+  }
+}
+
+function resolveLocalFileSpec(rawValue) {
+  const trimmed = typeof rawValue === "string" ? rawValue.trim() : "";
+  if (!trimmed) {
+    return null;
+  }
+
+  if (trimmed.startsWith("file://")) {
+    try {
+      const url = new URL(trimmed);
+      const fileName = url.pathname
+        ? decodeURIComponent(url.pathname.split("/").pop() || "")
+        : null;
+      return {
+        fileUrl: url.toString(),
+        fileName: fileName || null,
+      };
+    } catch (error) {
+      console.error("Invalid file URL", error);
+      return null;
+    }
+  }
+
+  const unquoted = trimmed.replace(/^['"]|['"]$/g, "");
+  if (!unquoted) {
+    return null;
+  }
+
+  let normalizedPath = unquoted.replace(/\\/g, "/");
+  if (/^[a-zA-Z]:\//.test(normalizedPath)) {
+    normalizedPath = `/${normalizedPath}`;
+  } else if (!normalizedPath.startsWith("/")) {
+    normalizedPath = `/${normalizedPath}`;
+  }
+
+  try {
+    const url = new URL("file://");
+    url.pathname = normalizedPath;
+    const fileName = url.pathname
+      ? decodeURIComponent(url.pathname.split("/").pop() || "")
+      : null;
+    return {
+      fileUrl: url.toString(),
+      fileName: fileName || null,
+    };
+  } catch (error) {
+    console.error("Unable to normalize local file path", error);
+    return null;
+  }
+}
+
+async function importLocalRequireFromPath({
+  rawPath,
+  existingId = null,
+  triggerButton = null,
+  clearInput = true,
+} = {}) {
+  const spec = resolveLocalFileSpec(rawPath);
+  if (!spec) {
+    alert("Enter a valid local file path or file:// URL before importing.");
+    return false;
+  }
+
+  const { fileUrl, fileName } = spec;
+
+  if (triggerButton) {
+    triggerButton.disabled = true;
+  }
+
+  try {
+    const code = await fetchScriptSource(fileUrl);
+    const newScript = await buildScriptWithLocalRequire({
+      code,
+      sourceUrl: fileUrl,
+      existingId,
+      fileName,
+    });
+
+    upsertImportedScript(newScript);
+    await persistScripts(scripts);
+    renderScripts();
+    if (clearInput) {
+      urlInput.value = "";
+      clearRepoResults();
+      updateInputContextState();
+    }
+    return true;
+  } catch (error) {
+    console.error(error);
+    const message = error?.message || String(error);
+    alert(`Unable to import script: ${message}`);
+    return false;
+  } finally {
+    if (triggerButton) {
+      triggerButton.disabled = false;
+    }
+  }
+}
 
 if (importFileButton && fileInput) {
   importFileButton.addEventListener("click", () => {
@@ -44,17 +256,6 @@ if (importFileButton && fileInput) {
     fileInput.value = "";
     fileInput.click();
   });
-
-  if (importAsRequireButton) {
-    importAsRequireButton.addEventListener("click", () => {
-      fileImportMode = ImportModes.REQUIRE;
-      activeImportButton = importAsRequireButton;
-      pendingReplaceId = null;
-      pendingReplaceButton = null;
-      fileInput.value = "";
-      fileInput.click();
-    });
-  }
 
   fileInput.addEventListener("change", async (event) => {
     const file = event.target.files && event.target.files[0];
@@ -93,23 +294,17 @@ if (importFileButton && fileInput) {
           ? file.webkitRelativePath
           : file.name;
       const normalizedPath = relativePath.replace(/\\/g, "/");
-      const sourceUrl = `file:///${encodeURI(normalizedPath)}`;
+      const inferredSourceUrl = normalizedPath
+        ? `file:///${encodeURI(normalizedPath)}`
+        : null;
 
-      const newScript =
-        fileImportMode === ImportModes.REQUIRE
-          ? await buildScriptWithLocalRequire({
-              code,
-              sourceUrl,
-              existingId: pendingReplaceId,
-              fileName: file.name,
-            })
-          : await buildScriptFromCode({
-              code,
-              sourceUrl,
-              existingId: pendingReplaceId,
-              sourceType: "local",
-              fileName: file.name,
-            });
+      const newScript = await buildScriptFromCode({
+        code,
+        sourceUrl: inferredSourceUrl,
+        existingId: pendingReplaceId,
+        sourceType: "local",
+        fileName: file.name,
+      });
 
       upsertImportedScript(newScript);
 
@@ -141,7 +336,56 @@ if (importFileButton && fileInput) {
   });
 }
 
+if (importAsRequireButton) {
+  importAsRequireButton.addEventListener("click", async () => {
+    const rawPath = urlInput.value.trim();
+    if (!rawPath) {
+      alert("Enter the full path or file:// URL before importing as @require.");
+      return;
+    }
+
+    pendingReplaceId = null;
+    pendingReplaceButton = null;
+    activeImportButton = null;
+
+    await importLocalRequireFromPath({
+      rawPath,
+      triggerButton: importAsRequireButton,
+      clearInput: true,
+    });
+  });
+}
+
+if (urlInput) {
+  const handleUrlChange = () => updateInputContextState();
+  urlInput.addEventListener("input", handleUrlChange);
+  urlInput.addEventListener("change", handleUrlChange);
+  updateInputContextState();
+}
+
 let scripts = [];
+
+function ensureRepoSectionVisibility() {
+  if (!repoImportSection) {
+    return;
+  }
+  repoImportSection.hidden = !repoSearchContext;
+}
+
+function clearRepoResults() {
+  repoSearchContext = null;
+  repoSearchResults = [];
+  ensureRepoSectionVisibility();
+  if (repoImportSummary) {
+    repoImportSummary.textContent = "";
+  }
+  if (repoImportList) {
+    repoImportList.innerHTML = "";
+  }
+  if (repoImportEmpty) {
+    repoImportEmpty.hidden = true;
+  }
+}
 
 function upsertImportedScript(newScript) {
   if (!newScript) {
@@ -154,7 +398,15 @@ function upsertImportedScript(newScript) {
     );
     if (indexById >= 0) {
       const enabled = scripts[indexById].enabled;
-      scripts[indexById] = { ...newScript, enabled };
+        const autoUpdateEnabled = scripts[indexById].autoUpdateEnabled === true;
+        const autoUpdateLastChecked =
+          scripts[indexById].autoUpdateLastChecked || 0;
+        scripts[indexById] = {
+          ...newScript,
+          enabled,
+          autoUpdateEnabled,
+          autoUpdateLastChecked,
+        };
       return;
     }
   }
@@ -166,7 +418,15 @@ function upsertImportedScript(newScript) {
     if (indexByUrl >= 0) {
       const existing = scripts[indexByUrl];
       const enabled = existing.enabled;
-      scripts[indexByUrl] = { ...existing, ...newScript, enabled };
+      const autoUpdateEnabled = existing.autoUpdateEnabled === true;
+      const autoUpdateLastChecked = existing.autoUpdateLastChecked || 0;
+      scripts[indexByUrl] = {
+        ...existing,
+        ...newScript,
+        enabled,
+        autoUpdateEnabled,
+        autoUpdateLastChecked,
+      };
       return;
     }
   }
@@ -198,6 +458,8 @@ function renderScripts() {
     const toggleEl = node.querySelector(".script__toggle");
     const removeBtn = node.querySelector(".remove");
     const refreshBtn = node.querySelector(".refresh");
+    const autoUpdateContainer = node.querySelector(".script__autoupdate");
+    const autoUpdateToggle = node.querySelector(".script__autoupdate-toggle");
 
     nameEl.textContent = script.name;
 
@@ -357,6 +619,26 @@ function renderScripts() {
     refreshBtn.textContent =
       script.sourceType === "local" ? "Reimport" : "Refresh";
 
+    const supportsAutoUpdate =
+      script.sourceType === "remote" && isGitHubUrl(script.url);
+    if (autoUpdateContainer && autoUpdateToggle) {
+      if (!supportsAutoUpdate) {
+        autoUpdateContainer.remove();
+        script.autoUpdateEnabled = false;
+      } else {
+        autoUpdateContainer.hidden = false;
+        autoUpdateToggle.disabled = false;
+        autoUpdateToggle.checked = script.autoUpdateEnabled === true;
+        autoUpdateToggle.addEventListener("change", async () => {
+          script.autoUpdateEnabled = autoUpdateToggle.checked;
+          if (script.autoUpdateEnabled) {
+            script.autoUpdateLastChecked = 0;
+          }
+          await persistScripts(scripts);
+        });
+      }
+    }
+
     toggleEl.addEventListener("change", async () => {
       script.enabled = toggleEl.checked;
       await persistScripts(scripts);
@@ -374,12 +656,25 @@ function renderScripts() {
 
     refreshBtn.addEventListener("click", async () => {
       if (script.sourceType === "local") {
+        if (script.importMode === ImportModes.REQUIRE) {
+          const sourceReference = script.url || "";
+          if (!sourceReference) {
+            alert("Original file reference is missing. Reimport from the Add Script section.");
+            return;
+          }
+
+          await importLocalRequireFromPath({
+            rawPath: sourceReference,
+            existingId: script.id,
+            triggerButton: refreshBtn,
+            clearInput: false,
+          });
+          return;
+        }
+
         pendingReplaceId = script.id;
         pendingReplaceButton = refreshBtn;
-        fileImportMode =
-          script.importMode === "require"
-            ? ImportModes.REQUIRE
-            : ImportModes.SCRIPT;
+        fileImportMode = ImportModes.SCRIPT;
         activeImportButton = null;
         fileInput.value = "";
         refreshBtn.disabled = true;
@@ -391,8 +686,12 @@ function renderScripts() {
       try {
         const updatedScript = await fetchAndBuildScript(script.url, script.id);
         const wasEnabled = script.enabled;
+        const previousAutoUpdateEnabled = script.autoUpdateEnabled === true;
+        const previousAutoUpdateLastChecked = script.autoUpdateLastChecked || 0;
         Object.assign(script, updatedScript);
         script.enabled = wasEnabled;
+        script.autoUpdateEnabled = previousAutoUpdateEnabled;
+        script.autoUpdateLastChecked = previousAutoUpdateLastChecked;
         await persistScripts(scripts);
         renderScripts();
       } catch (error) {
@@ -404,6 +703,77 @@ function renderScripts() {
     });
 
     scriptsContainer.appendChild(node);
+  }
+}
+
+function renderRepoScripts() {
+  if (!repoImportSection || !repoImportSummary || !repoImportList) {
+    return;
+  }
+
+  ensureRepoSectionVisibility();
+
+  if (!repoSearchContext) {
+    return;
+  }
+
+  const { owner, repo, ref, path } = repoSearchContext;
+  const locationLabel = path ? `${path}` : "repo root";
+  const count = repoSearchResults.length;
+  const summaryPrefix = `${owner}/${repo}@${ref}`;
+  const summarySuffix = count === 1 ? "1 userscript found" : `${count} userscripts found`;
+  repoImportSummary.textContent = `${summaryPrefix} (${locationLabel}) - ${summarySuffix}`;
+
+  repoImportList.innerHTML = "";
+
+  if (!repoImportEmpty) {
+    return;
+  }
+
+  if (count === 0) {
+    repoImportEmpty.hidden = false;
+    return;
+  }
+
+  repoImportEmpty.hidden = true;
+
+  for (const script of repoSearchResults) {
+    if (!repoImportRowTemplate?.content?.firstElementChild) {
+      continue;
+    }
+    const node = repoImportRowTemplate.content.firstElementChild.cloneNode(true);
+    const nameEl = node.querySelector(".repo-script__name");
+    const pathEl = node.querySelector(".repo-script__path");
+    const importBtn = node.querySelector(".repo-script__import");
+
+    if (nameEl) {
+      nameEl.textContent = script.name;
+    }
+    if (pathEl) {
+      pathEl.textContent = script.path;
+    }
+    if (importBtn) {
+      importBtn.addEventListener("click", async () => {
+        importBtn.disabled = true;
+        const previousLabel = importBtn.textContent;
+        importBtn.textContent = "Importing...";
+        try {
+          const imported = await fetchAndBuildScript(script.rawUrl);
+          upsertImportedScript(imported);
+          await persistScripts(scripts);
+          renderScripts();
+        } catch (error) {
+          console.error(error);
+          const message = error?.message || String(error);
+          alert(`Unable to import ${script.name}: ${message}`);
+        } finally {
+          importBtn.textContent = previousLabel;
+          importBtn.disabled = false;
+        }
+      });
+    }
+
+    repoImportList.appendChild(node);
   }
 }
 
@@ -435,6 +805,110 @@ function readFileAsText(file) {
   });
 }
 
+function parseGitHubRepoUrl(value) {
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch (error) {
+    return null;
+  }
+
+  const host = parsed.hostname.toLowerCase();
+  if (host !== "github.com" && host !== "www.github.com") {
+    return null;
+  }
+
+  const segments = parsed.pathname.split("/").filter(Boolean);
+  if (segments.length < 2) {
+    return null;
+  }
+
+  const owner = segments[0];
+  const repo = segments[1].replace(/\.git$/i, "");
+  if (!owner || !repo) {
+    return null;
+  }
+
+  if (segments.length >= 4 && segments[2] === "tree") {
+    const ref = segments[3];
+    const path = segments.slice(4).join("/");
+    return { owner, repo, ref, path };
+  }
+
+  return { owner, repo, ref: null, path: "" };
+}
+
+async function fetchGitHubJson(url) {
+  const response = await fetch(url, {
+    headers: {
+      Accept: "application/vnd.github+json",
+    },
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    const errorBody = await response.json().catch(() => ({}));
+    const message = errorBody?.message || `GitHub request failed with status ${response.status}`;
+    throw new Error(message);
+  }
+  return await response.json();
+}
+
+function encodePath(path) {
+  return path
+    .split("/")
+    .filter(Boolean)
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
+}
+
+async function fetchRepoUserscripts(repoSpec) {
+  const { owner, repo } = repoSpec;
+  let ref = repoSpec.ref;
+  let basePath = repoSpec.path || "";
+
+  if (!ref) {
+    const meta = await fetchGitHubJson(`https://api.github.com/repos/${owner}/${repo}`);
+    ref = meta?.default_branch || "main";
+  }
+
+  const encodedRefForApi = encodeURIComponent(ref);
+  const encodedRefForRaw = encodePath(ref);
+  const treeUrl = `https://api.github.com/repos/${owner}/${repo}/git/trees/${encodedRefForApi}?recursive=1`;
+  const treePayload = await fetchGitHubJson(treeUrl);
+
+  if (!Array.isArray(treePayload?.tree)) {
+    throw new Error("Invalid tree response from GitHub");
+  }
+
+  basePath = basePath.trim().replace(/^\/+|\/+$/g, "");
+  const normalizedBase = basePath ? basePath.replace(/\\/g, "/") : "";
+
+  const results = [];
+  for (const item of treePayload.tree) {
+    if (item?.type !== "blob" || typeof item.path !== "string") {
+      continue;
+    }
+    if (!item.path.endsWith(".user.js")) {
+      continue;
+    }
+    if (normalizedBase && !item.path.startsWith(`${normalizedBase}/`) && item.path !== normalizedBase) {
+      continue;
+    }
+
+    const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${encodedRefForRaw}/${encodePath(item.path)}`;
+    const fileName = item.path.split("/").pop() || item.path;
+    results.push({
+      name: fileName,
+      path: item.path,
+      rawUrl,
+    });
+  }
+
+  repoSearchContext = { owner, repo, ref, path: normalizedBase };
+  repoSearchResults = results.sort((a, b) => a.path.localeCompare(b.path));
+  renderRepoScripts();
+}
+
 addScriptForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const url = urlInput.value.trim();
@@ -447,21 +921,35 @@ addScriptForm.addEventListener("submit", async (event) => {
   submitBtn.disabled = true;
 
   try {
+    const repoSpec = parseGitHubRepoUrl(url);
+    if (repoSpec) {
+      await fetchRepoUserscripts(repoSpec);
+      return;
+    }
+
+    clearRepoResults();
+
     const newScript = await fetchAndBuildScript(url);
     const existingIndex = scripts.findIndex(
       (script) => script.url === newScript.url
     );
     if (existingIndex >= 0) {
+      const existing = scripts[existingIndex];
+      const autoUpdateEnabled = existing.autoUpdateEnabled === true;
+      const autoUpdateLastChecked = existing.autoUpdateLastChecked || 0;
       scripts[existingIndex] = {
-        ...scripts[existingIndex],
+        ...existing,
         ...newScript,
-        enabled: scripts[existingIndex].enabled,
+        enabled: existing.enabled,
+        autoUpdateEnabled,
+        autoUpdateLastChecked,
       };
     } else {
       scripts.push(newScript);
     }
     await persistScripts(scripts);
     urlInput.value = "";
+    updateInputContextState();
     renderScripts();
   } catch (error) {
     console.error(error);

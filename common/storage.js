@@ -1,5 +1,23 @@
 export const STORAGE_KEY = "openTamperScripts";
 
+function isGitHubUrl(url) {
+  if (!url) {
+    return false;
+  }
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return (
+      host === "github.com" ||
+      host === "www.github.com" ||
+      host.endsWith(".github.com") ||
+      host === "raw.githubusercontent.com" ||
+      host.endsWith(".githubusercontent.com")
+    );
+  } catch (_) {
+    return false;
+  }
+}
+
 function hasSyncStorage() {
   return Boolean(chrome?.storage?.sync && chrome.storage.sync.get);
 }
@@ -10,21 +28,37 @@ export function sanitizeScripts(raw) {
   if (!Array.isArray(raw)) {
     return [];
   }
-  return raw.map((entry) => ({
-    ...entry,
-    matches: Array.isArray(entry.matches) ? entry.matches : [],
-    excludes: Array.isArray(entry.excludes) ? entry.excludes : [],
-    enabled: entry.enabled !== false,
-    runAt: entry.runAt || "document_idle",
-    noframes: Boolean(entry.noframes),
-    allFrames: Boolean(entry.allFrames),
-    matchAboutBlank: Boolean(entry.matchAboutBlank),
-    requires: Array.isArray(entry.requires) ? entry.requires : [],
-    sourceType: entry.sourceType || "remote",
-    fileName: entry.fileName || null,
-    version: entry.version || null,
-    importMode: entry.importMode || "script",
-  }));
+  return raw.map((entry) => {
+    const sourceType = entry.sourceType || "remote";
+    const autoUpdateEligible = sourceType === "remote" && isGitHubUrl(entry.url);
+    const rawAutoUpdateSetting =
+      typeof entry.autoUpdateEnabled === "boolean"
+        ? entry.autoUpdateEnabled
+        : autoUpdateEligible;
+    const autoUpdateEnabled = autoUpdateEligible ? rawAutoUpdateSetting : false;
+    const autoUpdateLastChecked =
+      typeof entry.autoUpdateLastChecked === "number"
+        ? entry.autoUpdateLastChecked
+        : 0;
+
+    return {
+      ...entry,
+      matches: Array.isArray(entry.matches) ? entry.matches : [],
+      excludes: Array.isArray(entry.excludes) ? entry.excludes : [],
+      enabled: entry.enabled !== false,
+      runAt: entry.runAt || "document_idle",
+      noframes: Boolean(entry.noframes),
+      allFrames: Boolean(entry.allFrames),
+      matchAboutBlank: Boolean(entry.matchAboutBlank),
+      requires: Array.isArray(entry.requires) ? entry.requires : [],
+      sourceType,
+      fileName: entry.fileName || null,
+      version: entry.version || null,
+      importMode: entry.importMode || "script",
+      autoUpdateEnabled,
+      autoUpdateLastChecked,
+    };
+  });
 }
 
 export async function loadScriptsFromStorage() {

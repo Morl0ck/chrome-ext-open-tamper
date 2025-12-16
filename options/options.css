@@ -135,6 +135,48 @@ button:disabled {
   margin-top: 12px;
 }
 
+.repo-import .hint {
+  margin-top: 0;
+  margin-bottom: 16px;
+}
+
+#repo-import-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.repo-script {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border: 1px solid var(--script-border);
+  border-radius: 8px;
+  padding: 12px 16px;
+  background: var(--script-bg);
+}
+
+.repo-script__details {
+  max-width: calc(100% - 140px);
+}
+
+.repo-script__name {
+  margin: 0 0 4px;
+  font-size: 16px;
+}
+
+.repo-script__path {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+  word-break: break-all;
+}
+
+.repo-script__import {
+  flex-shrink: 0;
+  width: 120px;
+}
+
 #scripts {
   display: flex;
   flex-direction: column;
@@ -186,10 +228,19 @@ button:disabled {
   color: var(--text);
 }
 
+.script__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 16px;
+  flex-wrap: wrap;
+}
+
 .script__actions {
   display: flex;
   gap: 12px;
-  margin-top: 16px;
+  flex-wrap: wrap;
 }
 
 .script__actions .refresh {
@@ -198,6 +249,28 @@ button:disabled {
 
 .script__actions .remove {
   background: #ef4444;
+}
+
+.script__autoupdate {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--input-border);
+  background: transparent;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  margin-left: auto;
+}
+
+.script__autoupdate input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
 }
 
 .empty {

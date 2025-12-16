@@ -28,6 +28,24 @@ export function parseMetadata(code) {
   return meta;
 }
 
+function isGitHubUrl(url) {
+  if (!url) {
+    return false;
+  }
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return (
+      host === "github.com" ||
+      host === "www.github.com" ||
+      host.endsWith(".github.com") ||
+      host === "raw.githubusercontent.com" ||
+      host.endsWith(".githubusercontent.com")
+    );
+  } catch (_) {
+    return false;
+  }
+}
+
 export function deriveMatches(meta) {
   if (Array.isArray(meta.match) && meta.match.length > 0) {
     return meta.match;
@@ -253,6 +271,9 @@ function createScriptRecord({
   const resolvedSourceUrl = sourceUrl || null;
   const resolvedFileName = fileName || null;
   const fallbackLabel = resolvedSourceUrl || resolvedFileName || "local-file";
+  const resolvedSourceType = sourceType || "remote";
+  const autoUpdateEligible =
+    resolvedSourceType === "remote" && isGitHubUrl(resolvedSourceUrl);
 
   return {
     id: existingId || crypto.randomUUID(),
@@ -269,10 +290,12 @@ function createScriptRecord({
     allFrames: deriveAllFrames(meta),
     matchAboutBlank: deriveMatchAboutBlank(meta),
     requires: derivedRequires,
-    sourceType: sourceType || "remote",
+    sourceType: resolvedSourceType,
     fileName: resolvedFileName,
     version: deriveVersion(meta),
     importMode: importMode || "script",
+    autoUpdateEnabled: autoUpdateEligible,
+    autoUpdateLastChecked: 0,
   };
 }
 
