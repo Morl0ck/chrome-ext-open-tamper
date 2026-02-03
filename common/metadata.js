@@ -103,6 +103,15 @@ export function deriveMatchAboutBlank(meta) {
   return values.some((entry) => entry.toLowerCase() === "true");
 }
 
+export function deriveGrants(meta) {
+  if (!Array.isArray(meta.grant)) {
+    return [];
+  }
+  return meta.grant
+    .map((g) => (typeof g === "string" ? g.trim() : ""))
+    .filter(Boolean);
+}
+
 export function deriveName(meta, url) {
   const metaName = Array.isArray(meta.name) ? meta.name[0] : null;
   if (metaName) {
@@ -296,6 +305,7 @@ function createScriptRecord({
     importMode: importMode || "script",
     autoUpdateEnabled: autoUpdateEligible,
     autoUpdateLastChecked: 0,
+    grants: deriveGrants(meta),
   };
 }
 

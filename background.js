@@ -355,6 +355,170 @@ function wrapScriptCode(script) {
     ? `      if (!globalThis[REQUIRE_FLAG]) {\n${indentedRequires}        globalThis[REQUIRE_FLAG] = true;\n      }\n`
     : "";
 
+  // Check if script has GM_xmlhttpRequest grant
+  const grants = Array.isArray(script.grants) ? script.grants : [];
+  const hasXhrGrant =
+    grants.includes("GM_xmlhttpRequest") ||
+    grants.includes("GM.xmlHttpRequest");
+
+  // GM_xmlhttpRequest implementation injected when granted
+  const gmXhrCode = hasXhrGrant
+    ? `
+  const ensureGMXmlHttpRequest = () => {
+    if (typeof globalThis.GM_xmlhttpRequest === "function") {
+      return;
+    }
+
+    const XHR_CHANNEL = "openTamper:gmXhr";
+    const SCRIPT_ID = ${JSON.stringify(script.id)};
+    const pendingRequests = new Map();
+    let requestIdCounter = 0;
+
+    // Listen for responses from the bridge content script
+    window.addEventListener("message", (event) => {
+      if (event.source !== window) return;
+      if (!event.data || event.data.channel !== XHR_CHANNEL) return;
+
+      const { id, type, response, error } = event.data;
+      const handlers = pendingRequests.get(id);
+      if (!handlers) return;
+
+      if (type === "response") {
+        if (response.error) {
+          if (response.isTimeout && handlers.ontimeout) {
+            handlers.ontimeout({
+              error: response.errorMessage,
+              status: 0,
+              statusText: "Timeout",
+            });
+          } else if (handlers.onerror) {
+            handlers.onerror({
+              error: response.errorMessage,
+              status: 0,
+              statusText: "Error",
+            });
+          }
+        } else {
+          // Build the response object similar to Tampermonkey
+          let finalResponse = response.response;
+
+          // Handle arraybuffer reconstruction
+          if (response.responseType === "arraybuffer" && Array.isArray(response.response)) {
+            finalResponse = new Uint8Array(response.response).buffer;
+          }
+          // Handle blob reconstruction
+          else if (response.responseType === "blob" && response.response && response.response.data) {
+            const binary = atob(response.response.data);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) {
+              bytes[i] = binary.charCodeAt(i);
+            }
+            finalResponse = new Blob([bytes], { type: response.response.type || "application/octet-stream" });
+          }
+
+          const responseObj = {
+            readyState: response.readyState || 4,
+            status: response.status,
+            statusText: response.statusText,
+            responseHeaders: response.responseHeaders,
+            responseText: response.responseText,
+            response: finalResponse,
+            finalUrl: response.finalUrl,
+          };
+
+          // Call onreadystatechange if provided
+          if (handlers.onreadystatechange) {
+            handlers.onreadystatechange(responseObj);
+          }
+
+          // Call onload for successful responses
+          if (handlers.onload) {
+            handlers.onload(responseObj);
+          }
+        }
+        pendingRequests.delete(id);
+      } else if (type === "error") {
+        if (handlers.onerror) {
+          handlers.onerror({
+            error: error,
+            status: 0,
+            statusText: "Error",
+          });
+        }
+        pendingRequests.delete(id);
+      }
+    });
+
+    const gmXhr = (details) => {
+      if (!details || typeof details.url !== "string") {
+        throw new Error("GM_xmlhttpRequest requires a URL");
+      }
+
+      const requestId = SCRIPT_ID + "_" + (++requestIdCounter);
+      const handlers = {
+        onload: typeof details.onload === "function" ? details.onload : null,
+        onerror: typeof details.onerror === "function" ? details.onerror : null,
+        ontimeout: typeof details.ontimeout === "function" ? details.ontimeout : null,
+        onreadystatechange: typeof details.onreadystatechange === "function" ? details.onreadystatechange : null,
+        onprogress: typeof details.onprogress === "function" ? details.onprogress : null,
+      };
+      pendingRequests.set(requestId, handlers);
+
+      // Post message to bridge content script
+      window.postMessage({
+        channel: XHR_CHANNEL,
+        id: requestId,
+        type: "request",
+        scriptId: SCRIPT_ID,
+        details: {
+          method: details.method || "GET",
+          url: details.url,
+          headers: details.headers || {},
+          data: details.data,
+          timeout: details.timeout || 0,
+          responseType: details.responseType || "text",
+          anonymous: details.anonymous === true,
+          redirect: details.redirect,
+        },
+      }, "*");
+
+      // Return abort handle
+      return {
+        abort: () => {
+          const h = pendingRequests.get(requestId);
+          if (h) {
+            pendingRequests.delete(requestId);
+            if (h.onerror) {
+              h.onerror({ error: "Aborted", status: 0, statusText: "Aborted" });
+            }
+          }
+        },
+      };
+    };
+
+    Object.defineProperty(globalThis, "GM_xmlhttpRequest", {
+      value: gmXhr,
+      configurable: true,
+      writable: true,
+    });
+
+    // Also provide GM.xmlHttpRequest for newer API style
+    if (typeof globalThis.GM === "undefined") {
+      Object.defineProperty(globalThis, "GM", {
+        value: {},
+        configurable: true,
+        writable: true,
+      });
+    }
+    if (typeof globalThis.GM.xmlHttpRequest !== "function") {
+      globalThis.GM.xmlHttpRequest = gmXhr;
+    }
+  };
+`
+    : "";
+
+  const ensureXhrCall = hasXhrGrant ? "      ensureGMXmlHttpRequest();\n" : "";
+
   return `(() => {
   const EVENT_NAME = ${JSON.stringify(eventName)};
   const RUNNER_KEY = ${JSON.stringify(runnerKey)};
@@ -396,7 +560,7 @@ function wrapScriptCode(script) {
       writable: true
     });
   };
-
+${gmXhrCode}
   const executeScript = () => {
     try {
 ${requireBlock}${indentedSource}
@@ -408,7 +572,7 @@ ${requireBlock}${indentedSource}
   const run = () => {
     try {
       ensureAddStyle();
-      
+${ensureXhrCall}
       const runAt = ${JSON.stringify(script.runAt || "document_idle")};
       
       if (runAt === 'document_start') {
@@ -856,7 +1020,17 @@ if (chrome.alarms?.onAlarm) {
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (!message || message.type !== "openTamper:runScriptsForTab") {
+  if (!message) {
+    return;
+  }
+
+  // Handle GM_xmlhttpRequest from bridge content script
+  if (message.type === "openTamper:gmXhr") {
+    handleGmXmlHttpRequest(message, sender, sendResponse);
+    return true;
+  }
+
+  if (message.type !== "openTamper:runScriptsForTab") {
     return;
   }
 
@@ -886,6 +1060,122 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   return true;
 });
+
+/**
+ * Handle GM_xmlhttpRequest from userscripts via the bridge content script.
+ * This runs in the service worker context which bypasses CORS/CSP restrictions.
+ */
+async function handleGmXmlHttpRequest(message, sender, sendResponse) {
+  const { id, details } = message;
+
+  if (!details || typeof details.url !== "string") {
+    sendResponse?.({
+      error: true,
+      errorMessage: "Invalid request: missing URL",
+    });
+    return;
+  }
+
+  try {
+    const method = (details.method || "GET").toUpperCase();
+    const fetchOptions = {
+      method,
+      headers: {},
+      credentials: details.anonymous ? "omit" : "include",
+      redirect: details.redirect || "follow",
+    };
+
+    // Apply custom headers
+    if (details.headers && typeof details.headers === "object") {
+      for (const [key, value] of Object.entries(details.headers)) {
+        fetchOptions.headers[key] = String(value);
+      }
+    }
+
+    // Add request body for appropriate methods
+    if (details.data != null && ["POST", "PUT", "PATCH", "DELETE"].includes(method)) {
+      fetchOptions.body = details.data;
+    }
+
+    // Setup abort controller for timeout
+    const controller = new AbortController();
+    fetchOptions.signal = controller.signal;
+
+    let timeoutId = null;
+    if (details.timeout && details.timeout > 0) {
+      timeoutId = setTimeout(() => controller.abort(), details.timeout);
+    }
+
+    const response = await fetch(details.url, fetchOptions);
+
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+
+    // Build response headers string
+    const responseHeadersList = [];
+    response.headers.forEach((value, key) => {
+      responseHeadersList.push(`${key}: ${value}`);
+    });
+    const responseHeaders = responseHeadersList.join("\r\n");
+
+    // Get response content based on responseType
+    let responseText = "";
+    let responseData = null;
+
+    const responseType = details.responseType || "text";
+
+    if (responseType === "arraybuffer") {
+      const buffer = await response.arrayBuffer();
+      // Serialize as array of bytes for message passing
+      responseData = Array.from(new Uint8Array(buffer));
+      responseText = "";
+    } else if (responseType === "blob") {
+      const blob = await response.blob();
+      // For blob, we serialize as base64
+      const buffer = await blob.arrayBuffer();
+      const bytes = new Uint8Array(buffer);
+      let binary = "";
+      for (let i = 0; i < bytes.length; i++) {
+        binary += String.fromCharCode(bytes[i]);
+      }
+      responseData = {
+        type: blob.type,
+        data: btoa(binary),
+      };
+      responseText = "";
+    } else if (responseType === "json") {
+      responseText = await response.text();
+      try {
+        responseData = JSON.parse(responseText);
+      } catch (_) {
+        responseData = null;
+      }
+    } else {
+      // Default to text
+      responseText = await response.text();
+      responseData = responseText;
+    }
+
+    sendResponse?.({
+      readyState: 4,
+      status: response.status,
+      statusText: response.statusText,
+      responseHeaders,
+      responseText,
+      response: responseData,
+      finalUrl: response.url,
+      responseType,
+    });
+  } catch (error) {
+    const isTimeout = error.name === "AbortError";
+    sendResponse?.({
+      error: true,
+      isTimeout,
+      errorMessage: error.message || String(error),
+    });
+  }
+}
 
 restoreScriptsFromSyncIfNeeded()
   .catch((error) => {
