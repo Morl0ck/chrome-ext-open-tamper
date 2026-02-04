@@ -112,6 +112,32 @@
         <p id="empty-state" class="empty">No scripts added yet.</p>
       </section>
 
+      <section class="settings">
+        <h2>Settings</h2>
+        <div class="settings__group">
+          <h3>Badge Colors</h3>
+          <p class="hint">Customize the extension badge that shows the number of active scripts on each tab.</p>
+          <div class="settings__row">
+            <label for="badge-text-color">Text Color</label>
+            <div class="color-input-wrapper">
+              <input type="color" id="badge-text-color" value="#000000" />
+              <input type="text" id="badge-text-color-hex" class="color-hex-input" value="#000000" maxlength="7" />
+            </div>
+          </div>
+          <div class="settings__row">
+            <label for="badge-bg-color">Background Color</label>
+            <div class="color-input-wrapper">
+              <input type="color" id="badge-bg-color" value="#4CAF50" />
+              <input type="text" id="badge-bg-color-hex" class="color-hex-input" value="#4CAF50" maxlength="7" />
+            </div>
+          </div>
+          <div class="badge-preview">
+            <span class="badge-preview__label">Preview:</span>
+            <span id="badge-preview" class="badge-preview__badge">3</span>
+          </div>
+        </div>
+      </section>
+
       <section class="log" hidden>
         <h2>Log</h2>
         <pre id="log-output"></pre>

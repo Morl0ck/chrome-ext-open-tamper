@@ -1,19 +1,24 @@
 import { compileMatchPattern } from "./common/patterns.js";
 import {
   STORAGE_KEY,
+  SETTINGS_KEY,
   loadScriptsFromStorage,
   persistScripts,
   propagateLocalScriptsToSync,
   applySyncScriptsToLocal,
   restoreScriptsFromSyncIfNeeded,
+  loadSettings,
 } from "./common/storage.js";
 import { buildScriptFromCode } from "./common/metadata.js";
+
+// Constants
 const EVENT_PREFIX = "openTamper:run:";
 const RUNNER_PREFIX = "__openTamperRunner_";
 const AUTO_UPDATE_ALARM = "openTamper:autoUpdate";
 const AUTO_UPDATE_INTERVAL_MINUTES = 5;
 const AUTO_UPDATE_INTERVAL_MS = AUTO_UPDATE_INTERVAL_MINUTES * 60 * 1000;
 
+// State
 const compiledPatternsCache = new Map();
 const supportsUserScripts = Boolean(
   chrome.userScripts && typeof chrome.userScripts.register === "function"
@@ -57,7 +62,7 @@ async function isFileSchemeAccessEnabled() {
   });
 }
 
-async function fetchRequireContent(url) {
+async function fetchRemoteContent(url) {
   const response = await fetch(url, { cache: "no-store" });
   if (!response.ok) {
     throw new Error(`HTTP ${response.status}`);
@@ -83,13 +88,6 @@ function isGitHubUrl(url) {
   }
 }
 
-async function fetchScriptSource(url) {
-  const response = await fetch(url, { cache: "no-store" });
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}`);
-  }
-  return response.text();
-}
 
 // Reload @require resources right before execution so local file updates are honored.
 async function prepareScriptForExecution(script) {
@@ -143,7 +141,7 @@ async function prepareScriptForExecution(script) {
     }
 
     try {
-      const code = await fetchRequireContent(url);
+      const code = await fetchRemoteContent(url);
       normalized.code = code;
     } catch (error) {
       console.error(`[OpenTamper] Failed to load @require ${url}`, error);
@@ -171,16 +169,6 @@ function scriptHasLocalRequire(script) {
     }
     return false;
   });
-}
-
-function shouldRegisterScript(script) {
-  if (!script) {
-    return false;
-  }
-  // All scripts use chrome.userScripts.register() to bypass strict CSPs.
-  // Scripts with local file requires get updated on each navigation via
-  // refreshLocalScriptsForNavigation() to pick up fresh content.
-  return true;
 }
 
 // Track scripts that need fresh local content on each navigation
@@ -787,7 +775,7 @@ async function autoUpdateScripts() {
 
     let latestSource;
     try {
-      latestSource = await fetchScriptSource(script.url);
+      latestSource = await fetchRemoteContent(script.url);
     } catch (error) {
       console.warn(
         `[OpenTamper] auto-update fetch failed for ${script.url}`,
@@ -847,34 +835,20 @@ async function syncUserScripts() {
     scripts = [];
   }
 
-  const manualScripts = [];
-  const registrableScripts = [];
+  // Filter to enabled scripts with valid match patterns
+  const enabledScripts = scripts.filter((script) =>
+    script &&
+    script.enabled !== false &&
+    Array.isArray(script.matches) &&
+    script.matches.length > 0
+  );
 
-  for (const script of scripts) {
-    if (
-      !script ||
-      script.enabled === false ||
-      !Array.isArray(script.matches) ||
-      script.matches.length === 0
-    ) {
-      continue;
-    }
-
-    if (shouldRegisterScript(script)) {
-      registrableScripts.push(script);
-    } else {
-      manualScripts.push(script);
-    }
-  }
-
-  const manualCandidates = supportsUserScripts
-    ? manualScripts
-    : [...registrableScripts, ...manualScripts];
+  // When userScripts API is unavailable, all scripts need manual injection
+  const manualCandidates = supportsUserScripts ? [] : enabledScripts;
   updateManualInjectionScripts(manualCandidates);
 
   // Track scripts that need fresh local content on each navigation
-  const allEnabledScripts = [...registrableScripts, ...manualScripts];
-  updateFreshContentScripts(allEnabledScripts);
+  updateFreshContentScripts(enabledScripts);
 
   if (!supportsUserScripts) {
     if (!warnedUserScriptsMissing) {
@@ -895,7 +869,7 @@ async function syncUserScripts() {
   }
 
   const registrations = [];
-  for (const script of registrableScripts) {
+  for (const script of enabledScripts) {
     try {
       const prepared = await prepareScriptForExecution(script);
       const code = wrapScriptCode(prepared);
@@ -1093,6 +1067,18 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     });
     syncUserScripts().catch((error) => {
       console.warn("[OpenTamper] user script sync failed", error);
+    });
+    // Update badges when scripts change
+    updateAllTabBadges().catch((error) => {
+      console.warn("[OpenTamper] badge update after storage change failed", error);
+    });
+    return;
+  }
+
+  // Update badges when settings change (e.g., badge colors)
+  if (areaName === "local" && changes[SETTINGS_KEY]) {
+    updateAllTabBadges().catch((error) => {
+      console.warn("[OpenTamper] badge update after settings change failed", error);
     });
     return;
   }
@@ -1295,6 +1281,80 @@ async function handleGmXmlHttpRequest(message, sender, sendResponse) {
   }
 }
 
+// Badge functionality: show count of scripts running on current tab
+async function getMatchingScriptsCount(url) {
+  if (!url || url.startsWith("chrome://") || url.startsWith("edge://") || url.startsWith("about:")) {
+    return 0;
+  }
+
+  let scripts = [];
+  try {
+    scripts = await loadScriptsFromStorage();
+  } catch (error) {
+    console.warn("[OpenTamper] failed to load scripts for badge count", error);
+    return 0;
+  }
+
+  return scripts.filter((script) => {
+    if (!script || script.enabled === false) {
+      return false;
+    }
+    return matchesUrl(script, url);
+  }).length;
+}
+
+async function updateBadgeForTab(tabId, url) {
+  try {
+    const count = await getMatchingScriptsCount(url);
+    const text = count > 0 ? String(count) : "";
+    const settings = await loadSettings();
+    
+    await chrome.action.setBadgeText({ tabId, text });
+    await chrome.action.setBadgeTextColor({ tabId, color: settings.badgeTextColor });
+    
+    if (count > 0) {
+      await chrome.action.setBadgeBackgroundColor({ tabId, color: settings.badgeBackgroundColor });
+    }
+  } catch (error) {
+    // Tab might have been closed, ignore errors
+  }
+}
+
+// Update badge when tab is activated
+chrome.tabs.onActivated.addListener(async (activeInfo) => {
+  try {
+    const tab = await chrome.tabs.get(activeInfo.tabId);
+    if (tab.url) {
+      await updateBadgeForTab(activeInfo.tabId, tab.url);
+    }
+  } catch (error) {
+    // Tab might not be accessible, ignore
+  }
+});
+
+// Update badge when tab URL changes
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+  if (changeInfo.url || changeInfo.status === "complete") {
+    const url = changeInfo.url || tab.url;
+    if (url) {
+      await updateBadgeForTab(tabId, url);
+    }
+  }
+});
+
+// Update all visible tabs when scripts change
+async function updateAllTabBadges() {
+  try {
+    const tabs = await chrome.tabs.query({});
+    const updates = tabs
+      .filter((tab) => tab.id && tab.url)
+      .map((tab) => updateBadgeForTab(tab.id, tab.url));
+    await Promise.all(updates);
+  } catch (error) {
+    console.warn("[OpenTamper] failed to update all tab badges", error);
+  }
+}
+
 restoreScriptsFromSyncIfNeeded()
   .catch((error) => {
     console.warn("[OpenTamper] initial restore from sync storage failed", error);
@@ -1302,6 +1362,10 @@ restoreScriptsFromSyncIfNeeded()
   .finally(() => {
     syncUserScripts().catch((error) => {
       console.warn("Initial user script sync failed", error);
+    });
+    // Update badges after scripts are synced
+    updateAllTabBadges().catch((error) => {
+      console.warn("[OpenTamper] initial badge update failed", error);
     });
   });
 

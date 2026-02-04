@@ -1,4 +1,10 @@
 export const STORAGE_KEY = "openTamperScripts";
+export const SETTINGS_KEY = "openTamperSettings";
+
+const DEFAULT_SETTINGS = {
+  badgeTextColor: "#000000",
+  badgeBackgroundColor: "#4CAF50",
+};
 
 function isGitHubUrl(url) {
   if (!url) {
@@ -170,8 +176,39 @@ export async function restoreScriptsFromSyncIfNeeded() {
   }
 }
 
+export async function loadSettings() {
+  try {
+    const stored = await chrome.storage.local.get(SETTINGS_KEY);
+    const settings = stored[SETTINGS_KEY];
+    return {
+      ...DEFAULT_SETTINGS,
+      ...(settings && typeof settings === "object" ? settings : {}),
+    };
+  } catch (error) {
+    console.warn("[OpenTamper] failed to load settings", error);
+    return { ...DEFAULT_SETTINGS };
+  }
+}
+
+export async function persistSettings(settings) {
+  const merged = {
+    ...DEFAULT_SETTINGS,
+    ...(settings && typeof settings === "object" ? settings : {}),
+  };
+  await chrome.storage.local.set({ [SETTINGS_KEY]: merged });
+
+  if (hasSyncStorage()) {
+    try {
+      await chrome.storage.sync.set({ [SETTINGS_KEY]: merged });
+    } catch (error) {
+      console.warn("[OpenTamper] failed to mirror settings to sync storage", error);
+    }
+  }
+}
+
 export default {
   STORAGE_KEY,
+  SETTINGS_KEY,
   sanitizeScripts,
   loadScriptsFromStorage,
   persistScripts,
@@ -179,4 +216,6 @@ export default {
   propagateLocalScriptsToSync,
   applySyncScriptsToLocal,
   restoreScriptsFromSyncIfNeeded,
+  loadSettings,
+  persistSettings,
 };

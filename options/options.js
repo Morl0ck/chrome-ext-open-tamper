@@ -1,7 +1,10 @@
 import {
   STORAGE_KEY,
+  SETTINGS_KEY,
   loadScriptsFromStorage,
   persistScripts,
+  loadSettings,
+  persistSettings,
 } from "../common/storage.js";
 import {
   buildScriptFromCode,
@@ -24,6 +27,13 @@ const repoImportEmpty = document.getElementById("repo-import-empty");
 const repoImportRowTemplate = document.getElementById("repo-import-row");
 const fetchButton = addScriptForm?.querySelector('button[type="submit"]');
 const defaultFetchButtonLabel = fetchButton?.textContent?.trim() || "Fetch & Save";
+
+// Settings elements
+const badgeTextColorInput = document.getElementById("badge-text-color");
+const badgeTextColorHex = document.getElementById("badge-text-color-hex");
+const badgeBgColorInput = document.getElementById("badge-bg-color");
+const badgeBgColorHex = document.getElementById("badge-bg-color-hex");
+const badgePreview = document.getElementById("badge-preview");
 
 const supportsUserScripts = Boolean(
   chrome.userScripts && typeof chrome.userScripts.register === "function"
@@ -961,14 +971,136 @@ addScriptForm.addEventListener("submit", async (event) => {
 });
 
 chrome.storage.onChanged.addListener(async (changes, areaName) => {
-  if (areaName !== "local" || !changes[STORAGE_KEY]) {
+  if (areaName !== "local") {
     return;
   }
-  await loadScripts();
-  renderScripts();
+  if (changes[STORAGE_KEY]) {
+    await loadScripts();
+    renderScripts();
+  }
+  if (changes[SETTINGS_KEY]) {
+    await loadAndApplySettings();
+  }
 });
+
+// Settings functionality
+function isValidHexColor(value) {
+  return /^#[0-9A-Fa-f]{6}$/.test(value);
+}
+
+function updateBadgePreview(textColor, bgColor) {
+  if (!badgePreview) {
+    return;
+  }
+  badgePreview.style.color = textColor;
+  badgePreview.style.backgroundColor = bgColor;
+}
+
+async function loadAndApplySettings() {
+  const settings = await loadSettings();
+  
+  if (badgeTextColorInput) {
+    badgeTextColorInput.value = settings.badgeTextColor;
+  }
+  if (badgeTextColorHex) {
+    badgeTextColorHex.value = settings.badgeTextColor;
+  }
+  if (badgeBgColorInput) {
+    badgeBgColorInput.value = settings.badgeBackgroundColor;
+  }
+  if (badgeBgColorHex) {
+    badgeBgColorHex.value = settings.badgeBackgroundColor;
+  }
+  
+  updateBadgePreview(settings.badgeTextColor, settings.badgeBackgroundColor);
+}
+
+async function saveColorSettings() {
+  const textColor = badgeTextColorInput?.value || "#000000";
+  const bgColor = badgeBgColorInput?.value || "#4CAF50";
+  
+  await persistSettings({
+    badgeTextColor: textColor,
+    badgeBackgroundColor: bgColor,
+  });
+  
+  updateBadgePreview(textColor, bgColor);
+}
+
+// Badge text color handlers
+if (badgeTextColorInput && badgeTextColorHex) {
+  badgeTextColorInput.addEventListener("input", async () => {
+    const value = badgeTextColorInput.value;
+    badgeTextColorHex.value = value;
+    updateBadgePreview(value, badgeBgColorInput?.value || "#4CAF50");
+    await saveColorSettings();
+  });
+  
+  badgeTextColorHex.addEventListener("input", () => {
+    let value = badgeTextColorHex.value;
+    if (!value.startsWith("#")) {
+      value = "#" + value;
+    }
+    if (isValidHexColor(value)) {
+      badgeTextColorInput.value = value;
+      updateBadgePreview(value, badgeBgColorInput?.value || "#4CAF50");
+    }
+  });
+  
+  badgeTextColorHex.addEventListener("change", async () => {
+    let value = badgeTextColorHex.value;
+    if (!value.startsWith("#")) {
+      value = "#" + value;
+    }
+    if (isValidHexColor(value)) {
+      badgeTextColorInput.value = value;
+      badgeTextColorHex.value = value;
+      await saveColorSettings();
+    } else {
+      // Reset to current color picker value
+      badgeTextColorHex.value = badgeTextColorInput.value;
+    }
+  });
+}
+
+// Badge background color handlers
+if (badgeBgColorInput && badgeBgColorHex) {
+  badgeBgColorInput.addEventListener("input", async () => {
+    const value = badgeBgColorInput.value;
+    badgeBgColorHex.value = value;
+    updateBadgePreview(badgeTextColorInput?.value || "#000000", value);
+    await saveColorSettings();
+  });
+  
+  badgeBgColorHex.addEventListener("input", () => {
+    let value = badgeBgColorHex.value;
+    if (!value.startsWith("#")) {
+      value = "#" + value;
+    }
+    if (isValidHexColor(value)) {
+      badgeBgColorInput.value = value;
+      updateBadgePreview(badgeTextColorInput?.value || "#000000", value);
+    }
+  });
+  
+  badgeBgColorHex.addEventListener("change", async () => {
+    let value = badgeBgColorHex.value;
+    if (!value.startsWith("#")) {
+      value = "#" + value;
+    }
+    if (isValidHexColor(value)) {
+      badgeBgColorInput.value = value;
+      badgeBgColorHex.value = value;
+      await saveColorSettings();
+    } else {
+      // Reset to current color picker value
+      badgeBgColorHex.value = badgeBgColorInput.value;
+    }
+  });
+}
 
 (async function init() {
   await loadScripts();
   renderScripts();
+  await loadAndApplySettings();
 })();
