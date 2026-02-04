@@ -21,6 +21,7 @@ const supportsUserScripts = Boolean(
 let warnedUserScriptsMissing = false;
 const manualInjectionScriptIds = new Set();
 const manualRunStages = new Set();
+const freshContentScriptIds = new Set();
 let navigationListenersActive = false;
 
 function isFileSchemeUrl(url) {
@@ -173,10 +174,69 @@ function scriptHasLocalRequire(script) {
 }
 
 function shouldRegisterScript(script) {
-  if (!script || script.importMode === "require") {
+  if (!script) {
     return false;
   }
-  return !scriptHasLocalRequire(script);
+  // All scripts use chrome.userScripts.register() to bypass strict CSPs.
+  // Scripts with local file requires get updated on each navigation via
+  // refreshLocalScriptsForNavigation() to pick up fresh content.
+  return true;
+}
+
+// Track scripts that need fresh local content on each navigation
+function scriptNeedsFreshContent(script) {
+  if (!script) {
+    return false;
+  }
+  if (script.importMode === "require") {
+    return true;
+  }
+  return scriptHasLocalRequire(script);
+}
+
+// Update registered scripts with fresh local file content before navigation completes
+async function refreshLocalScriptsForNavigation(url) {
+  if (!supportsUserScripts || !url) {
+    return;
+  }
+
+  let scripts = [];
+  try {
+    scripts = await loadScriptsFromStorage();
+  } catch (error) {
+    console.warn("[OpenTamper] failed to load scripts for refresh", error);
+    return;
+  }
+
+  const scriptsToRefresh = scripts.filter((script) => {
+    if (!script || script.enabled === false) {
+      return false;
+    }
+    if (!scriptNeedsFreshContent(script)) {
+      return false;
+    }
+    return matchesUrl(script, url);
+  });
+
+  if (scriptsToRefresh.length === 0) {
+    return;
+  }
+
+  for (const script of scriptsToRefresh) {
+    try {
+      const prepared = await prepareScriptForExecution(script);
+      const code = wrapScriptCode(prepared);
+
+      // Update the registered script with fresh content
+      await chrome.userScripts.update([{
+        id: prepared.id,
+        js: [{ code }],
+      }]);
+    } catch (error) {
+      // Script might not be registered yet, or update failed - not critical
+      console.warn(`[OpenTamper] failed to refresh script ${script.id}`, error);
+    }
+  }
 }
 
 function normalizeRunAt(value) {
@@ -208,11 +268,25 @@ function updateManualInjectionScripts(scripts) {
   updateNavigationListenerState();
 }
 
+function updateFreshContentScripts(scripts) {
+  freshContentScriptIds.clear();
+  for (const entry of scripts) {
+    if (entry && entry.id && scriptNeedsFreshContent(entry)) {
+      freshContentScriptIds.add(entry.id);
+    }
+  }
+  updateNavigationListenerState();
+}
+
 function enableNavigationListeners() {
   if (navigationListenersActive || !chrome.webNavigation) {
     return;
   }
-  const { document_start, document_end, document_idle, history } = navigationHandlers;
+  const { beforeNavigate, document_start, document_end, document_idle, history } = navigationHandlers;
+  // Listen for onBeforeNavigate to refresh local scripts before page loads
+  if (chrome.webNavigation.onBeforeNavigate) {
+    chrome.webNavigation.onBeforeNavigate.addListener(beforeNavigate);
+  }
   if (chrome.webNavigation.onCommitted) {
     chrome.webNavigation.onCommitted.addListener(document_start);
   }
@@ -232,7 +306,10 @@ function disableNavigationListeners() {
   if (!navigationListenersActive || !chrome.webNavigation) {
     return;
   }
-  const { document_start, document_end, document_idle, history } = navigationHandlers;
+  const { beforeNavigate, document_start, document_end, document_idle, history } = navigationHandlers;
+  if (chrome.webNavigation.onBeforeNavigate) {
+    chrome.webNavigation.onBeforeNavigate.removeListener(beforeNavigate);
+  }
   if (chrome.webNavigation.onCommitted) {
     chrome.webNavigation.onCommitted.removeListener(document_start);
   }
@@ -249,7 +326,14 @@ function disableNavigationListeners() {
 }
 
 function updateNavigationListenerState() {
-  const needsListeners = manualInjectionScriptIds.size > 0 || !supportsUserScripts;
+  // Enable navigation listeners if we have:
+  // - Manual injection scripts (fallback for browsers without userScripts API)
+  // - Scripts needing fresh local content (to update before page load)
+  // - No userScripts support (need manual injection for everything)
+  const needsListeners =
+    manualInjectionScriptIds.size > 0 ||
+    freshContentScriptIds.size > 0 ||
+    !supportsUserScripts;
   if (needsListeners) {
     enableNavigationListeners();
   } else {
@@ -281,10 +365,26 @@ function handleNavigationEvent(stage, details, { force } = {}) {
 }
 
 const navigationHandlers = {
+  // Refresh local scripts BEFORE navigation completes so fresh content is used
+  beforeNavigate: (details) => {
+    if (!details || !details.url) {
+      return;
+    }
+    // Don't block navigation, but try to update scripts quickly
+    refreshLocalScriptsForNavigation(details.url).catch((error) => {
+      console.warn("[OpenTamper] pre-navigation refresh failed", error);
+    });
+  },
   document_start: (details) => handleNavigationEvent("document_start", details),
   document_end: (details) => handleNavigationEvent("document_end", details),
   document_idle: (details) => handleNavigationEvent("document_idle", details),
   history: (details) => {
+    // Also refresh on history state changes (SPA navigation)
+    if (details && details.url) {
+      refreshLocalScriptsForNavigation(details.url).catch((error) => {
+        console.warn("[OpenTamper] history refresh failed", error);
+      });
+    }
     handleNavigationEvent("document_start", details);
     handleNavigationEvent("document_end", details);
     handleNavigationEvent("document_idle", details);
@@ -772,6 +872,10 @@ async function syncUserScripts() {
     : [...registrableScripts, ...manualScripts];
   updateManualInjectionScripts(manualCandidates);
 
+  // Track scripts that need fresh local content on each navigation
+  const allEnabledScripts = [...registrableScripts, ...manualScripts];
+  updateFreshContentScripts(allEnabledScripts);
+
   if (!supportsUserScripts) {
     if (!warnedUserScriptsMissing) {
       console.warn(
@@ -846,7 +950,21 @@ async function injectScriptIntoTab(tabId, script, { frameId, allFrames, stage } 
       injectImmediately: stage === "document_start",
       func: (code) => {
         try {
-          (0, eval)(code);
+          // Use blob URL to bypass CSP restrictions that block eval()
+          const blob = new Blob([code], { type: "text/javascript" });
+          const url = URL.createObjectURL(blob);
+          const script = document.createElement("script");
+          script.src = url;
+          script.onload = () => {
+            URL.revokeObjectURL(url);
+            script.remove();
+          };
+          script.onerror = (error) => {
+            URL.revokeObjectURL(url);
+            script.remove();
+            console.error("[OpenTamper] script load failed", error);
+          };
+          (document.head || document.documentElement).appendChild(script);
         } catch (error) {
           console.error("[OpenTamper] injection failed", error);
         }
