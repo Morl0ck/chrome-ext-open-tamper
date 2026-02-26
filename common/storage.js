@@ -1,3 +1,5 @@
+import { isGitHubUrl } from "./urls.js";
+
 export const STORAGE_KEY = "openTamperScripts";
 export const SETTINGS_KEY = "openTamperSettings";
 
@@ -5,24 +7,6 @@ const DEFAULT_SETTINGS = {
   badgeTextColor: "#000000",
   badgeBackgroundColor: "#4CAF50",
 };
-
-function isGitHubUrl(url) {
-  if (!url) {
-    return false;
-  }
-  try {
-    const host = new URL(url).hostname.toLowerCase();
-    return (
-      host === "github.com" ||
-      host === "www.github.com" ||
-      host.endsWith(".github.com") ||
-      host === "raw.githubusercontent.com" ||
-      host.endsWith(".githubusercontent.com")
-    );
-  } catch (_) {
-    return false;
-  }
-}
 
 function hasSyncStorage() {
   return Boolean(chrome?.storage?.sync && chrome.storage.sync.get);
@@ -206,16 +190,3 @@ export async function persistSettings(settings) {
   }
 }
 
-export default {
-  STORAGE_KEY,
-  SETTINGS_KEY,
-  sanitizeScripts,
-  loadScriptsFromStorage,
-  persistScripts,
-  loadScriptsFromSyncStorage,
-  propagateLocalScriptsToSync,
-  applySyncScriptsToLocal,
-  restoreScriptsFromSyncIfNeeded,
-  loadSettings,
-  persistSettings,
-};

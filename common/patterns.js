@@ -43,7 +43,51 @@ export function compileMatchPattern(pattern) {
   try {
     return new RegExp(fullPattern);
   } catch (error) {
-    console.warn("Failed to compile match pattern", pattern, error);
+    console.warn("[OpenTamper] Failed to compile match pattern", pattern, error);
     return null;
   }
+}
+
+const compiledPatternsCache = new Map();
+
+export function clearPatternCache() {
+  compiledPatternsCache.clear();
+}
+
+export function patternToRegex(pattern) {
+  if (compiledPatternsCache.has(pattern)) {
+    return compiledPatternsCache.get(pattern);
+  }
+  const compiled = compileMatchPattern(pattern);
+  if (compiled) {
+    compiledPatternsCache.set(pattern, compiled);
+  }
+  return compiled;
+}
+
+export function matchesUrl(script, url) {
+  if (!url || !Array.isArray(script.matches) || script.matches.length === 0) {
+    return false;
+  }
+
+  const includes = script.matches.some((pattern) => {
+    const regex = patternToRegex(pattern);
+    return regex ? regex.test(url) : false;
+  });
+
+  if (!includes) {
+    return false;
+  }
+
+  if (Array.isArray(script.excludes) && script.excludes.length > 0) {
+    const isExcluded = script.excludes.some((pattern) => {
+      const regex = patternToRegex(pattern);
+      return regex ? regex.test(url) : false;
+    });
+    if (isExcluded) {
+      return false;
+    }
+  }
+
+  return true;
 }

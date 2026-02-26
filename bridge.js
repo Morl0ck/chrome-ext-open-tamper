@@ -25,6 +25,19 @@ window.addEventListener("message", async (event) => {
         details,
       });
 
+      if (response === undefined) {
+        window.postMessage(
+          {
+            channel: CHANNEL,
+            id,
+            type: "error",
+            error: "No response from service worker",
+          },
+          "*"
+        );
+        return;
+      }
+
       window.postMessage(
         {
           channel: CHANNEL,

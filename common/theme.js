@@ -1,20 +1,19 @@
-const m = window.matchMedia("(prefers-color-scheme: dark)");
-function applyTheme(isDark) {
+const darkModeQuery = window.matchMedia("(prefers-color-scheme: dark)");
+
+export function applyTheme(isDark) {
   try {
     document.documentElement.setAttribute(
       "data-theme",
       isDark ? "dark" : "light"
     );
-  } catch (e) {
+  } catch (_) {
     // ignore
   }
 }
 
-applyTheme(m.matches);
-if (typeof m.addEventListener === "function") {
-  m.addEventListener("change", (e) => applyTheme(e.matches));
-} else if (typeof m.addListener === "function") {
-  m.addListener((e) => applyTheme(e.matches));
+applyTheme(darkModeQuery.matches);
+if (typeof darkModeQuery.addEventListener === "function") {
+  darkModeQuery.addEventListener("change", (e) => applyTheme(e.matches));
+} else if (typeof darkModeQuery.addListener === "function") {
+  darkModeQuery.addListener((e) => applyTheme(e.matches));
 }
-
-export {};

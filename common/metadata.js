@@ -1,3 +1,5 @@
+import { isGitHubUrl } from "./urls.js";
+
 export function parseMetadata(code) {
   const meta = {};
   const match = code.match(/==UserScript==([\s\S]*?)==\/UserScript==/);
@@ -26,24 +28,6 @@ export function parseMetadata(code) {
     meta[key].push(value);
   }
   return meta;
-}
-
-function isGitHubUrl(url) {
-  if (!url) {
-    return false;
-  }
-  try {
-    const host = new URL(url).hostname.toLowerCase();
-    return (
-      host === "github.com" ||
-      host === "www.github.com" ||
-      host.endsWith(".github.com") ||
-      host === "raw.githubusercontent.com" ||
-      host.endsWith(".githubusercontent.com")
-    );
-  } catch (_) {
-    return false;
-  }
 }
 
 export function deriveMatches(meta) {
@@ -327,8 +311,3 @@ function extractMetadataLinesOrThrow(code) {
 
   return { metadataLines, closingIndex };
 }
-
-export default {
-  buildScriptFromCode,
-  buildScriptWithLocalRequire,
-};

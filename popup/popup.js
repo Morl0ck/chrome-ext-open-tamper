@@ -1,4 +1,4 @@
-import { compileMatchPattern } from "../common/patterns.js";
+import { matchesUrl, clearPatternCache } from "../common/patterns.js";
 import {
   STORAGE_KEY,
   loadScriptsFromStorage,
@@ -13,8 +13,6 @@ const refreshViewButton = document.getElementById("refresh-view");
 const rowTemplate = document.getElementById("script-item");
 const warningSection = document.getElementById("popup-warning");
 
-const patternCache = new Map();
-
 let scripts = [];
 let activeTab = null;
 const supportsUserScripts = Boolean(
@@ -23,44 +21,6 @@ const supportsUserScripts = Boolean(
 
 if (warningSection) {
   warningSection.style.display = supportsUserScripts ? "none" : "block";
-}
-
-function patternToRegex(pattern) {
-  if (patternCache.has(pattern)) {
-    return patternCache.get(pattern);
-  }
-  const compiled = compileMatchPattern(pattern);
-  if (compiled) {
-    patternCache.set(pattern, compiled);
-  }
-  return compiled;
-}
-
-function matchesUrl(script, url) {
-  if (!url || !Array.isArray(script.matches) || script.matches.length === 0) {
-    return false;
-  }
-
-  const includes = script.matches.some((pattern) => {
-    const regex = patternToRegex(pattern);
-    return regex ? regex.test(url) : false;
-  });
-
-  if (!includes) {
-    return false;
-  }
-
-  if (Array.isArray(script.excludes) && script.excludes.length > 0) {
-    const isExcluded = script.excludes.some((pattern) => {
-      const regex = patternToRegex(pattern);
-      return regex ? regex.test(url) : false;
-    });
-    if (isExcluded) {
-      return false;
-    }
-  }
-
-  return true;
 }
 
 function getScriptsForCurrentTab() {
@@ -161,7 +121,7 @@ function renderScriptsList() {
 }
 
 async function refreshView() {
-  patternCache.clear();
+  clearPatternCache();
   await loadFromStorage();
   renderScriptsList();
 }
@@ -221,4 +181,6 @@ chrome.storage.onChanged.addListener(async (changes, areaName) => {
 (async function init() {
   await initActiveTab();
   await refreshView();
-})();
+})().catch((error) => {
+  console.error("[OpenTamper] popup initialization failed", error);
+});

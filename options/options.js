@@ -10,6 +10,7 @@ import {
   buildScriptFromCode,
   buildScriptWithLocalRequire,
 } from "../common/metadata.js";
+import { isGitHubUrl } from "../common/urls.js";
 
 const addScriptForm = document.getElementById("add-script-form");
 const urlInput = document.getElementById("script-url");
@@ -53,24 +54,6 @@ let fileImportMode = ImportModes.SCRIPT;
 let activeImportButton = null;
 let repoSearchContext = null;
 let repoSearchResults = [];
-
-function isGitHubUrl(url) {
-  if (!url) {
-    return false;
-  }
-  try {
-    const host = new URL(url).hostname.toLowerCase();
-    return (
-      host === "github.com" ||
-      host === "www.github.com" ||
-      host.endsWith(".github.com") ||
-      host === "raw.githubusercontent.com" ||
-      host.endsWith(".githubusercontent.com")
-    );
-  } catch (error) {
-    return false;
-  }
-}
 
 function isGitHubRawUserscriptUrl(value) {
   if (!value) {
@@ -408,15 +391,15 @@ function upsertImportedScript(newScript) {
     );
     if (indexById >= 0) {
       const enabled = scripts[indexById].enabled;
-        const autoUpdateEnabled = scripts[indexById].autoUpdateEnabled === true;
-        const autoUpdateLastChecked =
-          scripts[indexById].autoUpdateLastChecked || 0;
-        scripts[indexById] = {
-          ...newScript,
-          enabled,
-          autoUpdateEnabled,
-          autoUpdateLastChecked,
-        };
+      const autoUpdateEnabled = scripts[indexById].autoUpdateEnabled === true;
+      const autoUpdateLastChecked =
+        scripts[indexById].autoUpdateLastChecked || 0;
+      scripts[indexById] = {
+        ...newScript,
+        enabled,
+        autoUpdateEnabled,
+        autoUpdateLastChecked,
+      };
       return;
     }
   }
@@ -1103,4 +1086,6 @@ if (badgeBgColorInput && badgeBgColorHex) {
   await loadScripts();
   renderScripts();
   await loadAndApplySettings();
-})();
+})().catch((error) => {
+  console.error("[OpenTamper] options initialization failed", error);
+});

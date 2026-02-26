@@ -1,4 +1,5 @@
-import { compileMatchPattern } from "./common/patterns.js";
+import { matchesUrl, clearPatternCache } from "./common/patterns.js";
+import { isGitHubUrl } from "./common/urls.js";
 import {
   STORAGE_KEY,
   SETTINGS_KEY,
@@ -19,7 +20,6 @@ const AUTO_UPDATE_INTERVAL_MINUTES = 5;
 const AUTO_UPDATE_INTERVAL_MS = AUTO_UPDATE_INTERVAL_MINUTES * 60 * 1000;
 
 // State
-const compiledPatternsCache = new Map();
 const supportsUserScripts = Boolean(
   chrome.userScripts && typeof chrome.userScripts.register === "function"
 );
@@ -69,25 +69,6 @@ async function fetchRemoteContent(url) {
   }
   return response.text();
 }
-
-function isGitHubUrl(url) {
-  if (!url) {
-    return false;
-  }
-  try {
-    const host = new URL(url).hostname.toLowerCase();
-    return (
-      host === "github.com" ||
-      host === "www.github.com" ||
-      host.endsWith(".github.com") ||
-      host === "raw.githubusercontent.com" ||
-      host.endsWith(".githubusercontent.com")
-    );
-  } catch (error) {
-    return false;
-  }
-}
-
 
 // Reload @require resources right before execution so local file updates are honored.
 async function prepareScriptForExecution(script) {
@@ -378,45 +359,6 @@ const navigationHandlers = {
     handleNavigationEvent("document_idle", details);
   },
 };
-
-function patternToRegex(pattern) {
-  if (compiledPatternsCache.has(pattern)) {
-    return compiledPatternsCache.get(pattern);
-  }
-
-  const compiled = compileMatchPattern(pattern);
-  if (compiled) {
-    compiledPatternsCache.set(pattern, compiled);
-  }
-  return compiled;
-}
-
-function matchesUrl(script, url) {
-  if (!Array.isArray(script.matches) || script.matches.length === 0) {
-    return false;
-  }
-
-  const includes = script.matches.some((pattern) => {
-    const regex = patternToRegex(pattern);
-    return regex ? regex.test(url) : false;
-  });
-
-  if (!includes) {
-    return false;
-  }
-
-  if (Array.isArray(script.excludes) && script.excludes.length > 0) {
-    const isExcluded = script.excludes.some((pattern) => {
-      const regex = patternToRegex(pattern);
-      return regex ? regex.test(url) : false;
-    });
-    if (isExcluded) {
-      return false;
-    }
-  }
-
-  return true;
-}
 
 function wrapScriptCode(script) {
   const eventName = `${EVENT_PREFIX}${script.id}`;
@@ -825,13 +767,13 @@ async function autoUpdateScripts() {
 }
 
 async function syncUserScripts() {
-  compiledPatternsCache.clear();
+  clearPatternCache();
 
   let scripts = [];
   try {
     scripts = await loadScriptsFromStorage();
   } catch (error) {
-    console.warn("Unable to read stored scripts", error);
+    console.warn("[OpenTamper] Unable to read stored scripts", error);
     scripts = [];
   }
 
@@ -853,7 +795,7 @@ async function syncUserScripts() {
   if (!supportsUserScripts) {
     if (!warnedUserScriptsMissing) {
       console.warn(
-        "chrome.userScripts API is unavailable; scripts will not auto-run automatically."
+        "[OpenTamper] chrome.userScripts API is unavailable; scripts will not auto-run automatically."
       );
       warnedUserScriptsMissing = true;
     }
@@ -864,7 +806,7 @@ async function syncUserScripts() {
     await chrome.userScripts.unregister();
   } catch (error) {
     if (error?.message && !error.message.includes("No such script")) {
-      console.warn("Failed to unregister user scripts", error);
+      console.warn("[OpenTamper] Failed to unregister user scripts", error);
     }
   }
 
@@ -902,7 +844,7 @@ async function syncUserScripts() {
   try {
     await chrome.userScripts.register(registrations);
   } catch (error) {
-    console.warn("Failed to register user scripts", error);
+    console.warn("[OpenTamper] Failed to register user scripts", error);
   }
 }
 
@@ -948,7 +890,7 @@ async function injectScriptIntoTab(tabId, script, { frameId, allFrames, stage } 
     return true;
   } catch (error) {
     const id = prepared?.id || script?.id;
-    console.warn("Failed to inject script", id, error);
+    console.warn("[OpenTamper] Failed to inject script", id, error);
     return false;
   }
 }
@@ -985,7 +927,7 @@ async function dispatchRunEvent(tabId, scriptId, { frameId, allFrames } = {}) {
     });
     return true;
   } catch (error) {
-    console.warn("Failed to dispatch run event", scriptId, error);
+    console.warn("[OpenTamper] Failed to dispatch run event", scriptId, error);
     return false;
   }
 }
@@ -1157,7 +1099,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       });
       sendResponse?.({ ok: true, ran: executedIds });
     } catch (error) {
-      console.warn("User-triggered execution failed", error);
+      console.warn("[OpenTamper] User-triggered execution failed", error);
       sendResponse?.({ ok: false, error: error.message });
     }
   })();
@@ -1170,7 +1112,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
  * This runs in the service worker context which bypasses CORS/CSP restrictions.
  */
 async function handleGmXmlHttpRequest(message, sender, sendResponse) {
-  const { id, details } = message;
+  const { id, details, scriptId } = message;
 
   if (!details || typeof details.url !== "string") {
     sendResponse?.({
@@ -1178,6 +1120,30 @@ async function handleGmXmlHttpRequest(message, sender, sendResponse) {
       errorMessage: "Invalid request: missing URL",
     });
     return;
+  }
+
+  if (scriptId) {
+    try {
+      const scripts = await loadScriptsFromStorage();
+      const script = scripts.find((s) => s && s.id === scriptId);
+      if (!script) {
+        sendResponse?.({ error: true, errorMessage: "Unknown script" });
+        return;
+      }
+      const grants = Array.isArray(script.grants) ? script.grants : [];
+      const hasXhrGrant =
+        grants.includes("GM_xmlhttpRequest") ||
+        grants.includes("GM.xmlHttpRequest");
+      if (!hasXhrGrant) {
+        sendResponse?.({
+          error: true,
+          errorMessage: "Script does not have GM_xmlhttpRequest grant",
+        });
+        return;
+      }
+    } catch (error) {
+      console.warn("[OpenTamper] Failed to validate XHR grant", error);
+    }
   }
 
   try {
@@ -1282,20 +1248,11 @@ async function handleGmXmlHttpRequest(message, sender, sendResponse) {
 }
 
 // Badge functionality: show count of scripts running on current tab
-async function getMatchingScriptsCount(url) {
+function getMatchingScriptsCount(scriptsArray, url) {
   if (!url || url.startsWith("chrome://") || url.startsWith("edge://") || url.startsWith("about:")) {
     return 0;
   }
-
-  let scripts = [];
-  try {
-    scripts = await loadScriptsFromStorage();
-  } catch (error) {
-    console.warn("[OpenTamper] failed to load scripts for badge count", error);
-    return 0;
-  }
-
-  return scripts.filter((script) => {
+  return scriptsArray.filter((script) => {
     if (!script || script.enabled === false) {
       return false;
     }
@@ -1303,15 +1260,16 @@ async function getMatchingScriptsCount(url) {
   }).length;
 }
 
-async function updateBadgeForTab(tabId, url) {
+async function updateBadgeForTab(tabId, url, preloadedScripts, preloadedSettings) {
   try {
-    const count = await getMatchingScriptsCount(url);
+    const scripts = preloadedScripts || await loadScriptsFromStorage();
+    const settings = preloadedSettings || await loadSettings();
+    const count = getMatchingScriptsCount(scripts, url);
     const text = count > 0 ? String(count) : "";
-    const settings = await loadSettings();
-    
+
     await chrome.action.setBadgeText({ tabId, text });
     await chrome.action.setBadgeTextColor({ tabId, color: settings.badgeTextColor });
-    
+
     if (count > 0) {
       await chrome.action.setBadgeBackgroundColor({ tabId, color: settings.badgeBackgroundColor });
     }
@@ -1320,7 +1278,6 @@ async function updateBadgeForTab(tabId, url) {
   }
 }
 
-// Update badge when tab is activated
 chrome.tabs.onActivated.addListener(async (activeInfo) => {
   try {
     const tab = await chrome.tabs.get(activeInfo.tabId);
@@ -1332,7 +1289,6 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
   }
 });
 
-// Update badge when tab URL changes
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   if (changeInfo.url || changeInfo.status === "complete") {
     const url = changeInfo.url || tab.url;
@@ -1342,13 +1298,16 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   }
 });
 
-// Update all visible tabs when scripts change
 async function updateAllTabBadges() {
   try {
-    const tabs = await chrome.tabs.query({});
+    const [tabs, scripts, settings] = await Promise.all([
+      chrome.tabs.query({}),
+      loadScriptsFromStorage(),
+      loadSettings(),
+    ]);
     const updates = tabs
       .filter((tab) => tab.id && tab.url)
-      .map((tab) => updateBadgeForTab(tab.id, tab.url));
+      .map((tab) => updateBadgeForTab(tab.id, tab.url, scripts, settings));
     await Promise.all(updates);
   } catch (error) {
     console.warn("[OpenTamper] failed to update all tab badges", error);
@@ -1361,7 +1320,7 @@ restoreScriptsFromSyncIfNeeded()
   })
   .finally(() => {
     syncUserScripts().catch((error) => {
-      console.warn("Initial user script sync failed", error);
+      console.warn("[OpenTamper] Initial user script sync failed", error);
     });
     // Update badges after scripts are synced
     updateAllTabBadges().catch((error) => {

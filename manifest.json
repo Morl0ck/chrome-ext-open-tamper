@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Open Tamper",
   "description": "Load remote userscripts and run them on matching pages.",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "options_page": "options/options.html",
   "permissions": [
     "storage",
