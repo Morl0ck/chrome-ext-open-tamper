@@ -1,65 +1,54 @@
 /**
  * Bridge content script running in ISOLATED world.
- * Relays GM_xmlhttpRequest calls from userscripts (MAIN world) to the background service worker.
+ * Relays GM API calls from userscripts (MAIN world) to the background service worker.
  */
 
-const CHANNEL = "openTamper:gmXhr";
+const XHR_CHANNEL = "openTamper:gmXhr";
+const SLACK_CHANNEL = "openTamper:gmSlackUserId";
 
-// Listen for messages from the page (MAIN world)
-window.addEventListener("message", async (event) => {
-  if (event.source !== window) {
-    return;
+function relayToBackground(channel, event) {
+  const { id, type, scriptId } = event.data;
+
+  if (type !== "request") return;
+
+  const payload = { type: channel, id, scriptId };
+
+  if (channel === XHR_CHANNEL) {
+    payload.details = event.data.details;
+  } else if (channel === SLACK_CHANNEL) {
+    payload.org = event.data.org;
   }
-  if (!event.data || event.data.channel !== CHANNEL) {
-    return;
-  }
 
-  const { id, type, details, scriptId } = event.data;
-
-  if (type === "request") {
+  (async () => {
     try {
-      const response = await chrome.runtime.sendMessage({
-        type: "openTamper:gmXhr",
-        id,
-        scriptId,
-        details,
-      });
+      const response = await chrome.runtime.sendMessage(payload);
 
       if (response === undefined) {
         window.postMessage(
-          {
-            channel: CHANNEL,
-            id,
-            type: "error",
-            error: "No response from service worker",
-          },
+          { channel, id, type: "error", error: "No response from service worker" },
           "*"
         );
         return;
       }
 
-      window.postMessage(
-        {
-          channel: CHANNEL,
-          id,
-          type: "response",
-          response,
-        },
-        "*"
-      );
+      window.postMessage({ channel, id, type: "response", response }, "*");
     } catch (error) {
       window.postMessage(
-        {
-          channel: CHANNEL,
-          id,
-          type: "error",
-          error: error.message || String(error),
-        },
+        { channel, id, type: "error", error: error.message || String(error) },
         "*"
       );
     }
+  })();
+}
+
+window.addEventListener("message", (event) => {
+  if (event.source !== window || !event.data) return;
+
+  const { channel } = event.data;
+  if (channel === XHR_CHANNEL || channel === SLACK_CHANNEL) {
+    relayToBackground(channel, event);
   }
 });
 
-// Signal that the bridge is ready
-window.postMessage({ channel: CHANNEL, type: "bridge-ready" }, "*");
+window.postMessage({ channel: XHR_CHANNEL, type: "bridge-ready" }, "*");
+window.postMessage({ channel: SLACK_CHANNEL, type: "bridge-ready" }, "*");

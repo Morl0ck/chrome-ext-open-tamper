@@ -385,11 +385,14 @@ function wrapScriptCode(script) {
     ? `      if (!globalThis[REQUIRE_FLAG]) {\n${indentedRequires}        globalThis[REQUIRE_FLAG] = true;\n      }\n`
     : "";
 
-  // Check if script has GM_xmlhttpRequest grant
   const grants = Array.isArray(script.grants) ? script.grants : [];
+
   const hasXhrGrant =
     grants.includes("GM_xmlhttpRequest") ||
     grants.includes("GM.xmlHttpRequest");
+
+  const hasSlackUserIdGrant =
+    grants.includes("GM_slackUserId");
 
   // GM_xmlhttpRequest implementation injected when granted
   const gmXhrCode = hasXhrGrant
@@ -547,7 +550,83 @@ function wrapScriptCode(script) {
 `
     : "";
 
+  const gmSlackUserIdCode = hasSlackUserIdGrant
+    ? `
+  const ensureGMSlackUserId = () => {
+    if (typeof globalThis.GM_slackUserId === "function") {
+      return;
+    }
+
+    const SLACK_CHANNEL = "openTamper:gmSlackUserId";
+    const SCRIPT_ID = ${JSON.stringify(script.id)};
+    const TIMEOUT_MS = 30000;
+
+    const slackUserId = (org) => {
+      if (!org || typeof org !== "string") {
+        return Promise.reject(new Error("GM_slackUserId requires an org string"));
+      }
+      return new Promise((resolve, reject) => {
+        const requestId = SCRIPT_ID + "_slack_" + Date.now() + "_" + Math.random().toString(36).slice(2);
+        let settled = false;
+
+        const cleanup = () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          window.removeEventListener("message", handler);
+        };
+
+        const timer = setTimeout(() => {
+          cleanup();
+          const err = new Error("GM_slackUserId timed out after " + TIMEOUT_MS + "ms");
+          console.warn("[OpenTamper]", err.message);
+          reject(err);
+        }, TIMEOUT_MS);
+
+        const handler = (event) => {
+          if (event.source !== window) return;
+          if (!event.data || event.data.channel !== SLACK_CHANNEL) return;
+          if (event.data.type !== "response" && event.data.type !== "error") return;
+          if (event.data.id !== requestId) return;
+
+          cleanup();
+
+          const { type, response, error } = event.data;
+          if (type === "response") {
+            if (response && response.error) {
+              console.warn("[OpenTamper] GM_slackUserId error:", response.errorMessage);
+              reject(new Error(response.errorMessage || "GM_slackUserId failed"));
+            } else {
+              resolve(response.userId);
+            }
+          } else if (type === "error") {
+            console.warn("[OpenTamper] GM_slackUserId bridge error:", error);
+            reject(new Error(error || "GM_slackUserId bridge error"));
+          }
+        };
+
+        window.addEventListener("message", handler);
+        window.postMessage({
+          channel: SLACK_CHANNEL,
+          id: requestId,
+          type: "request",
+          scriptId: SCRIPT_ID,
+          org,
+        }, "*");
+      });
+    };
+
+    Object.defineProperty(globalThis, "GM_slackUserId", {
+      value: slackUserId,
+      configurable: true,
+      writable: true,
+    });
+  };
+`
+    : "";
+
   const ensureXhrCall = hasXhrGrant ? "      ensureGMXmlHttpRequest();\n" : "";
+  const ensureSlackUserIdCall = hasSlackUserIdGrant ? "      ensureGMSlackUserId();\n" : "";
 
   return `(() => {
   const EVENT_NAME = ${JSON.stringify(eventName)};
@@ -590,7 +669,7 @@ function wrapScriptCode(script) {
       writable: true
     });
   };
-${gmXhrCode}
+${gmXhrCode}${gmSlackUserIdCode}
   const executeScript = () => {
     try {
 ${requireBlock}${indentedSource}
@@ -602,7 +681,7 @@ ${requireBlock}${indentedSource}
   const run = () => {
     try {
       ensureAddStyle();
-${ensureXhrCall}
+${ensureXhrCall}${ensureSlackUserIdCall}
       const runAt = ${JSON.stringify(script.runAt || "document_idle")};
       
       if (runAt === 'document_start') {
@@ -1076,6 +1155,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  // Handle slackUserId from bridge content script
+  if (message.type === "openTamper:gmSlackUserId") {
+    handleSlackUserId(message, sender, sendResponse);
+    return true;
+  }
+
   if (message.type !== "openTamper:runScriptsForTab") {
     return;
   }
@@ -1244,6 +1329,156 @@ async function handleGmXmlHttpRequest(message, sender, sendResponse) {
       isTimeout,
       errorMessage: error.message || String(error),
     });
+  }
+}
+
+/**
+ * Handle slackUserId requests: find an open Slack tab, execute a script in its
+ * MAIN world to read the reduxPersistence IndexedDB, and extract the user ID
+ * from a key matching persist:slack-client-<org>-<user>.
+ */
+async function handleSlackUserId(message, sender, sendResponse) {
+  const { org, scriptId } = message;
+
+  if (!org || typeof org !== "string") {
+    sendResponse?.({ error: true, errorMessage: "Missing or invalid org parameter" });
+    return;
+  }
+
+  if (scriptId) {
+    try {
+      const scripts = await loadScriptsFromStorage();
+      const script = scripts.find((s) => s && s.id === scriptId);
+      if (!script) {
+        sendResponse?.({ error: true, errorMessage: "Unknown script" });
+        return;
+      }
+      const grants = Array.isArray(script.grants) ? script.grants : [];
+      if (!grants.includes("GM_slackUserId")) {
+        sendResponse?.({ error: true, errorMessage: "Script does not have GM_slackUserId grant" });
+        return;
+      }
+    } catch (error) {
+      console.warn("[OpenTamper] Failed to validate slackUserId grant", error);
+      sendResponse?.({ error: true, errorMessage: "Failed to validate grant: " + (error.message || String(error)) });
+      return;
+    }
+  }
+
+  const EXECUTE_TIMEOUT_MS = 10000;
+  const TAB_LOAD_TIMEOUT_MS = 15000;
+
+  try {
+    let tabs = await chrome.tabs.query({ url: "https://app.slack.com/*" });
+    let createdTabId = null;
+
+    if (!tabs || tabs.length === 0) {
+      // No Slack tab open — create a background tab to read IndexedDB, then close it.
+      // The tab is non-active so it won't steal focus.
+      const tab = await chrome.tabs.create({ url: "https://app.slack.com/", active: false });
+      createdTabId = tab.id;
+      let onUpdated;
+      await Promise.race([
+        new Promise((resolve) => {
+          onUpdated = (tabId, info) => {
+            if (tabId === createdTabId && info.status === "complete") {
+              chrome.tabs.onUpdated.removeListener(onUpdated);
+              onUpdated = null;
+              resolve();
+            }
+          };
+          chrome.tabs.onUpdated.addListener(onUpdated);
+        }),
+        new Promise((resolve) => setTimeout(() => {
+          if (onUpdated) {
+            chrome.tabs.onUpdated.removeListener(onUpdated);
+            onUpdated = null;
+          }
+          console.warn("[OpenTamper] Slack tab load timed out after " + TAB_LOAD_TIMEOUT_MS + "ms, proceeding anyway");
+          resolve();
+        }, TAB_LOAD_TIMEOUT_MS)),
+      ]);
+      tabs = [tab];
+    }
+
+    const tabId = tabs[0].id;
+    // Slack stores Redux state in IndexedDB "reduxPersistence" / "reduxPersistenceStore"
+    // with keys like "persist:slack-client-<orgId>-<userId>". This is an internal
+    // implementation detail (no stable Slack API exposes "which user am I?" without
+    // Admin-level tokens). If Slack changes this schema, this code will need updating.
+    // Last verified: March 2026.
+    const keyPrefix = `persist:slack-client-${org}-`;
+
+    let results;
+    try {
+      results = await Promise.race([
+        chrome.scripting.executeScript({
+          target: { tabId },
+          world: "MAIN",
+          func: (prefix) => {
+            return new Promise((resolve, reject) => {
+              const timeout = setTimeout(() => reject(new Error("IndexedDB read timed out")), 5000);
+              const request = indexedDB.open("reduxPersistence");
+              request.onerror = () => { clearTimeout(timeout); reject(new Error("Failed to open reduxPersistence DB")); };
+              request.onsuccess = () => {
+                const db = request.result;
+                let tx;
+                try {
+                  tx = db.transaction("reduxPersistenceStore", "readonly");
+                } catch (e) {
+                  clearTimeout(timeout);
+                  db.close();
+                  reject(new Error("Table reduxPersistenceStore not found"));
+                  return;
+                }
+                const store = tx.objectStore("reduxPersistenceStore");
+                const cursorReq = store.openCursor();
+                cursorReq.onsuccess = () => {
+                  const cursor = cursorReq.result;
+                  if (!cursor) {
+                    clearTimeout(timeout);
+                    db.close();
+                    resolve(null);
+                    return;
+                  }
+                  const key = typeof cursor.key === "string" ? cursor.key : String(cursor.key);
+                  if (key.startsWith(prefix)) {
+                    clearTimeout(timeout);
+                    db.close();
+                    resolve(key.slice(prefix.length));
+                    return;
+                  }
+                  cursor.continue();
+                };
+                cursorReq.onerror = () => {
+                  clearTimeout(timeout);
+                  db.close();
+                  reject(new Error("Cursor error reading reduxPersistenceStore"));
+                };
+              };
+            });
+          },
+          args: [keyPrefix],
+        }),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("executeScript timed out")), EXECUTE_TIMEOUT_MS)
+        ),
+      ]);
+    } finally {
+      if (createdTabId) {
+        chrome.tabs.remove(createdTabId).catch(() => {});
+      }
+    }
+
+    const result = results?.[0]?.result;
+    if (result === null || result === undefined) {
+      sendResponse?.({ error: true, errorMessage: `No key matching persist:slack-client-${org}-* found` });
+      return;
+    }
+
+    sendResponse?.({ userId: result });
+  } catch (error) {
+    sendResponse?.({ error: true, errorMessage: error.message || String(error) });
   }
 }
 
