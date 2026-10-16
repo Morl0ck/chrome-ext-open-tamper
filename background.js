@@ -625,8 +625,104 @@ function wrapScriptCode(script) {
 `
     : "";
 
+  const hasStorageGrant =
+    grants.includes("GM_getValue") ||
+    grants.includes("GM_setValue") ||
+    grants.includes("GM_deleteValue");
+
+  // GM_getValue / GM_setValue / GM_deleteValue backed by the shared extension store.
+  // These are async (return Promises), unlike Tampermonkey's synchronous GM_getValue.
+  const gmStorageCode = hasStorageGrant
+    ? `
+  const ensureGMStorage = () => {
+    if (typeof globalThis.GM_getValue === "function" && typeof globalThis.GM_setValue === "function") {
+      return;
+    }
+
+    const STORAGE_CHANNEL = "openTamper:gmStorage";
+    const SCRIPT_ID = ${JSON.stringify(script.id)};
+    const TIMEOUT_MS = 10000;
+    let requestCounter = 0;
+
+    const call = (op, key, value) => new Promise((resolve, reject) => {
+      const requestId = SCRIPT_ID + "_storage_" + (++requestCounter) + "_" + Date.now();
+      let settled = false;
+
+      const cleanup = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        window.removeEventListener("message", handler);
+      };
+
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("GM storage " + op + " timed out after " + TIMEOUT_MS + "ms"));
+      }, TIMEOUT_MS);
+
+      const handler = (event) => {
+        if (event.source !== window) return;
+        if (!event.data || event.data.channel !== STORAGE_CHANNEL) return;
+        if (event.data.type !== "response" && event.data.type !== "error") return;
+        if (event.data.id !== requestId) return;
+
+        cleanup();
+
+        const { type, response, error } = event.data;
+        if (type === "response") {
+          if (response && response.error) {
+            reject(new Error(response.errorMessage || "GM storage failed"));
+          } else {
+            resolve(response);
+          }
+        } else {
+          reject(new Error(error || "GM storage bridge error"));
+        }
+      };
+
+      window.addEventListener("message", handler);
+      window.postMessage({
+        channel: STORAGE_CHANNEL,
+        id: requestId,
+        type: "request",
+        scriptId: SCRIPT_ID,
+        op,
+        key,
+        value,
+      }, "*");
+    });
+
+    Object.defineProperty(globalThis, "GM_getValue", {
+      value: async (key, defaultValue) => {
+        const response = await call("get", key);
+        return response && response.value !== undefined ? response.value : defaultValue;
+      },
+      configurable: true,
+      writable: true,
+    });
+
+    Object.defineProperty(globalThis, "GM_setValue", {
+      value: async (key, value) => {
+        await call("set", key, value);
+      },
+      configurable: true,
+      writable: true,
+    });
+
+    Object.defineProperty(globalThis, "GM_deleteValue", {
+      value: async (key) => {
+        await call("delete", key);
+      },
+      configurable: true,
+      writable: true,
+    });
+  };
+`
+    : "";
+
   const ensureXhrCall = hasXhrGrant ? "      ensureGMXmlHttpRequest();\n" : "";
   const ensureSlackUserIdCall = hasSlackUserIdGrant ? "      ensureGMSlackUserId();\n" : "";
+  const ensureStorageCall = hasStorageGrant ? "      ensureGMStorage();\n" : "";
 
   return `(() => {
   const EVENT_NAME = ${JSON.stringify(eventName)};
@@ -669,7 +765,7 @@ function wrapScriptCode(script) {
       writable: true
     });
   };
-${gmXhrCode}${gmSlackUserIdCode}
+${gmXhrCode}${gmSlackUserIdCode}${gmStorageCode}
   const executeScript = () => {
     try {
 ${requireBlock}${indentedSource}
@@ -681,7 +777,7 @@ ${requireBlock}${indentedSource}
   const run = () => {
     try {
       ensureAddStyle();
-${ensureXhrCall}${ensureSlackUserIdCall}
+${ensureXhrCall}${ensureSlackUserIdCall}${ensureStorageCall}
       const runAt = ${JSON.stringify(script.runAt || "document_idle")};
       
       if (runAt === 'document_start') {
@@ -1144,9 +1240,97 @@ if (chrome.alarms?.onAlarm) {
   });
 }
 
+// ---- GM value storage (shared across origins, backed by chrome.storage.local) ----
+const GM_STORAGE_PREFIX = "openTamper:gm:";
+
+async function gmStorageGet(key) {
+  const stored = await chrome.storage.local.get(GM_STORAGE_PREFIX + key);
+  return stored[GM_STORAGE_PREFIX + key];
+}
+
+async function gmStorageSet(key, value) {
+  await chrome.storage.local.set({ [GM_STORAGE_PREFIX + key]: value });
+}
+
+async function gmStorageDelete(key) {
+  await chrome.storage.local.remove(GM_STORAGE_PREFIX + key);
+}
+
+async function handleGmStorage(message, sender, sendResponse) {
+  const { op, key, value } = message;
+  try {
+    if (typeof key !== "string" || !key) {
+      throw new Error("GM storage requires a string key");
+    }
+    if (op === "get") {
+      sendResponse({ value: await gmStorageGet(key) });
+    } else if (op === "set") {
+      await gmStorageSet(key, value);
+      sendResponse({ ok: true });
+    } else if (op === "delete") {
+      await gmStorageDelete(key);
+      sendResponse({ ok: true });
+    } else {
+      throw new Error("Unknown GM storage op: " + op);
+    }
+  } catch (error) {
+    sendResponse({ error: true, errorMessage: error.message || String(error) });
+  }
+}
+
+// ---- Raw develop page observer ----
+// Makes NO requests. When a raw develop file finishes loading with HTTP 200, the branch
+// exists, so mark it in the shared cache. The status is read from the navigation timing
+// entry in the ISOLATED world, which works on sandboxed raw pages (MAIN world does not).
+// The cache key must match CACHE_KEY in auto-set-destination-to-develop.user.js.
+const DEVELOP_CACHE_KEY = "auto-set-destination-develop-cache";
+const RAW_DEVELOP_PATTERN = /^https:\/\/raw\.githubusercontent\.com\/([^/]+)\/([^/]+)\/refs\/heads\/develop\//;
+
+async function observeRawDevelopPage(details) {
+  if (details.frameId !== 0) return;
+  const match = RAW_DEVELOP_PATTERN.exec(details.url);
+  if (!match) return;
+  const repoPath = match[1] + "/" + match[2];
+
+  try {
+    const [injection] = await chrome.scripting.executeScript({
+      target: { tabId: details.tabId, frameIds: [0] },
+      world: "ISOLATED",
+      func: () => {
+        const nav = performance.getEntriesByType("navigation")[0];
+        return nav ? nav.responseStatus : null;
+      },
+    });
+    const status = injection ? injection.result : null;
+    if (status !== 200) {
+      console.log("[OpenTamper] raw develop page status", status, "for", repoPath, "- cache unchanged");
+      return;
+    }
+
+    const cache = (await gmStorageGet(DEVELOP_CACHE_KEY)) || {};
+    if (cache[repoPath] === true) return;
+    await gmStorageSet(DEVELOP_CACHE_KEY, { ...cache, [repoPath]: true });
+    console.log("[OpenTamper] develop confirmed from raw page:", repoPath);
+  } catch (error) {
+    console.warn("[OpenTamper] raw develop observation failed", error);
+  }
+}
+
+if (chrome.webNavigation && chrome.webNavigation.onCompleted) {
+  chrome.webNavigation.onCompleted.addListener(observeRawDevelopPage, {
+    url: [{ urlMatches: "^https://raw\\.githubusercontent\\.com/[^/]+/[^/]+/refs/heads/develop/" }],
+  });
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message) {
     return;
+  }
+
+  // Handle GM value storage from bridge content script
+  if (message.type === "openTamper:gmStorage") {
+    handleGmStorage(message, sender, sendResponse);
+    return true;
   }
 
   // Handle GM_xmlhttpRequest from bridge content script
