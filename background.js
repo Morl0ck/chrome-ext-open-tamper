@@ -1240,35 +1240,46 @@ if (chrome.alarms?.onAlarm) {
   });
 }
 
-// ---- GM value storage (shared across origins, backed by chrome.storage.local) ----
-const GM_STORAGE_PREFIX = "openTamper:gm:";
+// ---- Script-scoped GM value storage (backed by chrome.storage.local) ----
+// Private keys: openTamper:gm:<scriptId>:<key>  (only that script can read/write them)
+// Shared keys:  openTamper:shared:<key>         (only scripts that declare // @shared-key <key>)
+const GM_PRIVATE_PREFIX = "openTamper:gm:";
+const GM_SHARED_PREFIX = "openTamper:shared:";
 
-async function gmStorageGet(key) {
-  const stored = await chrome.storage.local.get(GM_STORAGE_PREFIX + key);
-  return stored[GM_STORAGE_PREFIX + key];
+function resolveStorageKey(script, key) {
+  const shared = Array.isArray(script.sharedKeys) ? script.sharedKeys : [];
+  if (shared.includes(key)) {
+    return GM_SHARED_PREFIX + key;
+  }
+  return GM_PRIVATE_PREFIX + script.id + ":" + key;
 }
 
-async function gmStorageSet(key, value) {
-  await chrome.storage.local.set({ [GM_STORAGE_PREFIX + key]: value });
-}
-
-async function gmStorageDelete(key) {
-  await chrome.storage.local.remove(GM_STORAGE_PREFIX + key);
+async function findScriptById(scriptId) {
+  if (!scriptId) return null;
+  const scripts = await loadScriptsFromStorage();
+  return scripts.find((item) => item.id === scriptId) || null;
 }
 
 async function handleGmStorage(message, sender, sendResponse) {
-  const { op, key, value } = message;
+  const { op, key, value, scriptId } = message;
   try {
+    const script = await findScriptById(scriptId);
+    if (!script) {
+      throw new Error("GM storage: unknown script " + scriptId);
+    }
     if (typeof key !== "string" || !key) {
       throw new Error("GM storage requires a string key");
     }
+    const storageKey = resolveStorageKey(script, key);
+
     if (op === "get") {
-      sendResponse({ value: await gmStorageGet(key) });
+      const stored = await chrome.storage.local.get(storageKey);
+      sendResponse({ value: stored[storageKey] });
     } else if (op === "set") {
-      await gmStorageSet(key, value);
+      await chrome.storage.local.set({ [storageKey]: value });
       sendResponse({ ok: true });
     } else if (op === "delete") {
-      await gmStorageDelete(key);
+      await chrome.storage.local.remove(storageKey);
       sendResponse({ ok: true });
     } else {
       throw new Error("Unknown GM storage op: " + op);
@@ -1278,48 +1289,108 @@ async function handleGmStorage(message, sender, sendResponse) {
   }
 }
 
-// ---- Raw develop page observer ----
-// Makes NO requests. When a raw develop file finishes loading with HTTP 200, the branch
-// exists, so mark it in the shared cache. The status is read from the navigation timing
-// entry in the ISOLATED world, which works on sandboxed raw pages (MAIN world does not).
-// The cache key must match CACHE_KEY in auto-set-destination-to-develop.user.js.
-const DEVELOP_CACHE_KEY = "auto-set-destination-develop-cache";
-const RAW_DEVELOP_PATTERN = /^https:\/\/raw\.githubusercontent\.com\/([^/]+)\/([^/]+)\/refs\/heads\/develop\//;
+// ---- Page observers ----
+// A script declares // @observe <pattern> and includes an observer block:
+//   /* @observer-begin
+//   (ctx) => ({ set: { key: value }, delete: [key] })
+//   @observer-end */
+// The block is a comment in the page script, so the page never runs it.
+// On a matching page load (main frame), the extension reads the HTTP status from the navigation
+// timing entry (ISOLATED world, works on sandboxed pages), then runs the observer block in the
+// USER_SCRIPT world with ctx = { url, status, values }. The observer's result is applied to storage.
+// The extension doesn't interpret the result; it only enforces the storage rules above.
+// This makes no requests. The observer block itself is the only place script-specific logic lives.
+const OBSERVER_BLOCK_REGEX = /\/\*\s*@observer-begin\s*([\s\S]*?)\s*@observer-end\s*\*\//;
 
-async function observeRawDevelopPage(details) {
-  if (details.frameId !== 0) return;
-  const match = RAW_DEVELOP_PATTERN.exec(details.url);
-  if (!match) return;
-  const repoPath = match[1] + "/" + match[2];
+async function readNavigationStatus(tabId) {
+  const [injection] = await chrome.scripting.executeScript({
+    target: { tabId, frameIds: [0] },
+    world: "ISOLATED",
+    func: () => {
+      const nav = performance.getEntriesByType("navigation")[0];
+      return nav ? nav.responseStatus : null;
+    },
+  });
+  return injection ? injection.result : null;
+}
+
+async function collectObserverValues(script) {
+  const all = await chrome.storage.local.get(null);
+  const values = {};
+  const shared = Array.isArray(script.sharedKeys) ? script.sharedKeys : [];
+  for (const key of shared) {
+    values[key] = all[GM_SHARED_PREFIX + key];
+  }
+  const privatePrefix = GM_PRIVATE_PREFIX + script.id + ":";
+  for (const storageKey of Object.keys(all)) {
+    if (storageKey.startsWith(privatePrefix)) {
+      values[storageKey.slice(privatePrefix.length)] = all[storageKey];
+    }
+  }
+  return values;
+}
+
+async function applyObserverResult(script, result) {
+  if (!result || typeof result !== "object") return;
+
+  const updates = {};
+  if (result.set && typeof result.set === "object") {
+    for (const [key, value] of Object.entries(result.set)) {
+      updates[resolveStorageKey(script, key)] = value;
+    }
+  }
+  if (Object.keys(updates).length > 0) {
+    await chrome.storage.local.set(updates);
+  }
+
+  if (Array.isArray(result.delete) && result.delete.length > 0) {
+    await chrome.storage.local.remove(result.delete.map((key) => resolveStorageKey(script, key)));
+  }
+}
+
+async function runObserver(script, details) {
+  if (!chrome.userScripts || typeof chrome.userScripts.execute !== "function") {
+    console.warn("[OpenTamper] observers need the userScripts API; skipping", script.name);
+    return;
+  }
+  const block = OBSERVER_BLOCK_REGEX.exec(script.code || "");
+  if (!block) {
+    console.warn("[OpenTamper] observer block missing for", script.name);
+    return;
+  }
+
+  const status = await readNavigationStatus(details.tabId);
+  const ctx = { url: details.url, status, values: await collectObserverValues(script) };
+  const code = "(" + block[1].trim() + ")(" + JSON.stringify(ctx) + ");";
 
   try {
-    const [injection] = await chrome.scripting.executeScript({
+    const [injection] = await chrome.userScripts.execute({
+      js: [{ code }],
       target: { tabId: details.tabId, frameIds: [0] },
-      world: "ISOLATED",
-      func: () => {
-        const nav = performance.getEntriesByType("navigation")[0];
-        return nav ? nav.responseStatus : null;
-      },
     });
-    const status = injection ? injection.result : null;
-    if (status !== 200) {
-      console.log("[OpenTamper] raw develop page status", status, "for", repoPath, "- cache unchanged");
-      return;
+    if (injection && injection.error) {
+      throw new Error(injection.error);
     }
-
-    const cache = (await gmStorageGet(DEVELOP_CACHE_KEY)) || {};
-    if (cache[repoPath] === true) return;
-    await gmStorageSet(DEVELOP_CACHE_KEY, { ...cache, [repoPath]: true });
-    console.log("[OpenTamper] develop confirmed from raw page:", repoPath);
+    const result = injection ? injection.result : null;
+    await applyObserverResult(script, result);
+    console.log("[OpenTamper] observer ran for", script.name, { url: details.url, status, result });
   } catch (error) {
-    console.warn("[OpenTamper] raw develop observation failed", error);
+    console.warn("[OpenTamper] observer failed for", script.name, error);
+  }
+}
+
+async function runObserversForPage(details) {
+  if (details.frameId !== 0) return;
+  const scripts = await loadScriptsFromStorage();
+  for (const script of scripts) {
+    if (!script.enabled || !Array.isArray(script.observers) || script.observers.length === 0) continue;
+    if (!matchesUrl({ matches: script.observers, excludes: [] }, details.url)) continue;
+    await runObserver(script, details);
   }
 }
 
 if (chrome.webNavigation && chrome.webNavigation.onCompleted) {
-  chrome.webNavigation.onCompleted.addListener(observeRawDevelopPage, {
-    url: [{ urlMatches: "^https://raw\\.githubusercontent\\.com/[^/]+/[^/]+/refs/heads/develop/" }],
-  });
+  chrome.webNavigation.onCompleted.addListener(runObserversForPage);
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
