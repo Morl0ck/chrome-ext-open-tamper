@@ -87,6 +87,24 @@ export function deriveMatchAboutBlank(meta) {
   return values.some((entry) => entry.toLowerCase() === "true");
 }
 
+// @observe <match pattern>: URL patterns whose page loads are reported to the script's observer block
+// (the // @observer-begin ... // @observer-end block), which runs in the extension's isolated context.
+export function deriveObservers(meta) {
+  if (!Array.isArray(meta.observe)) {
+    return [];
+  }
+  return meta.observe.map((p) => String(p).trim()).filter(Boolean);
+}
+
+// @shared-key <key>: storage keys this script shares with other scripts. Other scripts can
+// only read or write a shared key if they declare it too. Non-declared keys are private to the script.
+export function deriveSharedKeys(meta) {
+  if (!Array.isArray(meta["shared-key"])) {
+    return [];
+  }
+  return meta["shared-key"].map((k) => String(k).trim()).filter(Boolean);
+}
+
 export function deriveGrants(meta) {
   if (!Array.isArray(meta.grant)) {
     return [];
@@ -290,6 +308,8 @@ function createScriptRecord({
     autoUpdateEnabled: autoUpdateEligible,
     autoUpdateLastChecked: 0,
     grants: deriveGrants(meta),
+    observers: deriveObservers(meta),
+    sharedKeys: deriveSharedKeys(meta),
   };
 }
 

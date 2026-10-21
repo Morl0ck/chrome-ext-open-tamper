@@ -625,8 +625,104 @@ function wrapScriptCode(script) {
 `
     : "";
 
+  const hasStorageGrant =
+    grants.includes("GM_getValue") ||
+    grants.includes("GM_setValue") ||
+    grants.includes("GM_deleteValue");
+
+  // GM_getValue / GM_setValue / GM_deleteValue backed by the shared extension store.
+  // These are async (return Promises), unlike Tampermonkey's synchronous GM_getValue.
+  const gmStorageCode = hasStorageGrant
+    ? `
+  const ensureGMStorage = () => {
+    if (typeof globalThis.GM_getValue === "function" && typeof globalThis.GM_setValue === "function") {
+      return;
+    }
+
+    const STORAGE_CHANNEL = "openTamper:gmStorage";
+    const SCRIPT_ID = ${JSON.stringify(script.id)};
+    const TIMEOUT_MS = 10000;
+    let requestCounter = 0;
+
+    const call = (op, key, value) => new Promise((resolve, reject) => {
+      const requestId = SCRIPT_ID + "_storage_" + (++requestCounter) + "_" + Date.now();
+      let settled = false;
+
+      const cleanup = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        window.removeEventListener("message", handler);
+      };
+
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("GM storage " + op + " timed out after " + TIMEOUT_MS + "ms"));
+      }, TIMEOUT_MS);
+
+      const handler = (event) => {
+        if (event.source !== window) return;
+        if (!event.data || event.data.channel !== STORAGE_CHANNEL) return;
+        if (event.data.type !== "response" && event.data.type !== "error") return;
+        if (event.data.id !== requestId) return;
+
+        cleanup();
+
+        const { type, response, error } = event.data;
+        if (type === "response") {
+          if (response && response.error) {
+            reject(new Error(response.errorMessage || "GM storage failed"));
+          } else {
+            resolve(response);
+          }
+        } else {
+          reject(new Error(error || "GM storage bridge error"));
+        }
+      };
+
+      window.addEventListener("message", handler);
+      window.postMessage({
+        channel: STORAGE_CHANNEL,
+        id: requestId,
+        type: "request",
+        scriptId: SCRIPT_ID,
+        op,
+        key,
+        value,
+      }, "*");
+    });
+
+    Object.defineProperty(globalThis, "GM_getValue", {
+      value: async (key, defaultValue) => {
+        const response = await call("get", key);
+        return response && response.value !== undefined ? response.value : defaultValue;
+      },
+      configurable: true,
+      writable: true,
+    });
+
+    Object.defineProperty(globalThis, "GM_setValue", {
+      value: async (key, value) => {
+        await call("set", key, value);
+      },
+      configurable: true,
+      writable: true,
+    });
+
+    Object.defineProperty(globalThis, "GM_deleteValue", {
+      value: async (key) => {
+        await call("delete", key);
+      },
+      configurable: true,
+      writable: true,
+    });
+  };
+`
+    : "";
+
   const ensureXhrCall = hasXhrGrant ? "      ensureGMXmlHttpRequest();\n" : "";
   const ensureSlackUserIdCall = hasSlackUserIdGrant ? "      ensureGMSlackUserId();\n" : "";
+  const ensureStorageCall = hasStorageGrant ? "      ensureGMStorage();\n" : "";
 
   return `(() => {
   const EVENT_NAME = ${JSON.stringify(eventName)};
@@ -669,7 +765,7 @@ function wrapScriptCode(script) {
       writable: true
     });
   };
-${gmXhrCode}${gmSlackUserIdCode}
+${gmXhrCode}${gmSlackUserIdCode}${gmStorageCode}
   const executeScript = () => {
     try {
 ${requireBlock}${indentedSource}
@@ -681,7 +777,7 @@ ${requireBlock}${indentedSource}
   const run = () => {
     try {
       ensureAddStyle();
-${ensureXhrCall}${ensureSlackUserIdCall}
+${ensureXhrCall}${ensureSlackUserIdCall}${ensureStorageCall}
       const runAt = ${JSON.stringify(script.runAt || "document_idle")};
       
       if (runAt === 'document_start') {
@@ -1144,9 +1240,168 @@ if (chrome.alarms?.onAlarm) {
   });
 }
 
+// ---- Script-scoped GM value storage (backed by chrome.storage.local) ----
+// Private keys: openTamper:gm:<scriptId>:<key>  (only that script can read/write them)
+// Shared keys:  openTamper:shared:<key>         (only scripts that declare // @shared-key <key>)
+const GM_PRIVATE_PREFIX = "openTamper:gm:";
+const GM_SHARED_PREFIX = "openTamper:shared:";
+
+function resolveStorageKey(script, key) {
+  const shared = Array.isArray(script.sharedKeys) ? script.sharedKeys : [];
+  if (shared.includes(key)) {
+    return GM_SHARED_PREFIX + key;
+  }
+  return GM_PRIVATE_PREFIX + script.id + ":" + key;
+}
+
+async function findScriptById(scriptId) {
+  if (!scriptId) return null;
+  const scripts = await loadScriptsFromStorage();
+  return scripts.find((item) => item.id === scriptId) || null;
+}
+
+async function handleGmStorage(message, sender, sendResponse) {
+  const { op, key, value, scriptId } = message;
+  try {
+    const script = await findScriptById(scriptId);
+    if (!script) {
+      throw new Error("GM storage: unknown script " + scriptId);
+    }
+    if (typeof key !== "string" || !key) {
+      throw new Error("GM storage requires a string key");
+    }
+    const storageKey = resolveStorageKey(script, key);
+
+    if (op === "get") {
+      const stored = await chrome.storage.local.get(storageKey);
+      sendResponse({ value: stored[storageKey] });
+    } else if (op === "set") {
+      await chrome.storage.local.set({ [storageKey]: value });
+      sendResponse({ ok: true });
+    } else if (op === "delete") {
+      await chrome.storage.local.remove(storageKey);
+      sendResponse({ ok: true });
+    } else {
+      throw new Error("Unknown GM storage op: " + op);
+    }
+  } catch (error) {
+    sendResponse({ error: true, errorMessage: error.message || String(error) });
+  }
+}
+
+// ---- Page observers ----
+// A script declares // @observe <pattern> and includes an observer block:
+//   /* @observer-begin
+//   (ctx) => ({ set: { key: value }, delete: [key] })
+//   @observer-end */
+// The block is a comment in the page script, so the page never runs it.
+// On a matching page load (main frame), the extension reads the HTTP status from the navigation
+// timing entry (ISOLATED world, works on sandboxed pages), then runs the observer block in the
+// USER_SCRIPT world with ctx = { url, status, values }. The observer's result is applied to storage.
+// The extension doesn't interpret the result; it only enforces the storage rules above.
+// This makes no requests. The observer block itself is the only place script-specific logic lives.
+const OBSERVER_BLOCK_REGEX = /\/\*\s*@observer-begin\s*([\s\S]*?)\s*@observer-end\s*\*\//;
+
+async function readNavigationStatus(tabId) {
+  const [injection] = await chrome.scripting.executeScript({
+    target: { tabId, frameIds: [0] },
+    world: "ISOLATED",
+    func: () => {
+      const nav = performance.getEntriesByType("navigation")[0];
+      return nav ? nav.responseStatus : null;
+    },
+  });
+  return injection ? injection.result : null;
+}
+
+async function collectObserverValues(script) {
+  const all = await chrome.storage.local.get(null);
+  const values = {};
+  const shared = Array.isArray(script.sharedKeys) ? script.sharedKeys : [];
+  for (const key of shared) {
+    values[key] = all[GM_SHARED_PREFIX + key];
+  }
+  const privatePrefix = GM_PRIVATE_PREFIX + script.id + ":";
+  for (const storageKey of Object.keys(all)) {
+    if (storageKey.startsWith(privatePrefix)) {
+      values[storageKey.slice(privatePrefix.length)] = all[storageKey];
+    }
+  }
+  return values;
+}
+
+async function applyObserverResult(script, result) {
+  if (!result || typeof result !== "object") return;
+
+  const updates = {};
+  if (result.set && typeof result.set === "object") {
+    for (const [key, value] of Object.entries(result.set)) {
+      updates[resolveStorageKey(script, key)] = value;
+    }
+  }
+  if (Object.keys(updates).length > 0) {
+    await chrome.storage.local.set(updates);
+  }
+
+  if (Array.isArray(result.delete) && result.delete.length > 0) {
+    await chrome.storage.local.remove(result.delete.map((key) => resolveStorageKey(script, key)));
+  }
+}
+
+async function runObserver(script, details) {
+  if (!chrome.userScripts || typeof chrome.userScripts.execute !== "function") {
+    console.warn("[OpenTamper] observers need the userScripts API; skipping", script.name);
+    return;
+  }
+  const block = OBSERVER_BLOCK_REGEX.exec(script.code || "");
+  if (!block) {
+    console.warn("[OpenTamper] observer block missing for", script.name);
+    return;
+  }
+
+  const status = await readNavigationStatus(details.tabId);
+  const ctx = { url: details.url, status, values: await collectObserverValues(script) };
+  const code = "(" + block[1].trim() + ")(" + JSON.stringify(ctx) + ");";
+
+  try {
+    const [injection] = await chrome.userScripts.execute({
+      js: [{ code }],
+      target: { tabId: details.tabId, frameIds: [0] },
+    });
+    if (injection && injection.error) {
+      throw new Error(injection.error);
+    }
+    const result = injection ? injection.result : null;
+    await applyObserverResult(script, result);
+    console.log("[OpenTamper] observer ran for", script.name, { url: details.url, status, result });
+  } catch (error) {
+    console.warn("[OpenTamper] observer failed for", script.name, error);
+  }
+}
+
+async function runObserversForPage(details) {
+  if (details.frameId !== 0) return;
+  const scripts = await loadScriptsFromStorage();
+  for (const script of scripts) {
+    if (!script.enabled || !Array.isArray(script.observers) || script.observers.length === 0) continue;
+    if (!matchesUrl({ matches: script.observers, excludes: [] }, details.url)) continue;
+    await runObserver(script, details);
+  }
+}
+
+if (chrome.webNavigation && chrome.webNavigation.onCompleted) {
+  chrome.webNavigation.onCompleted.addListener(runObserversForPage);
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message) {
     return;
+  }
+
+  // Handle GM value storage from bridge content script
+  if (message.type === "openTamper:gmStorage") {
+    handleGmStorage(message, sender, sendResponse);
+    return true;
   }
 
   // Handle GM_xmlhttpRequest from bridge content script

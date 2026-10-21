@@ -5,6 +5,7 @@
 
 const XHR_CHANNEL = "openTamper:gmXhr";
 const SLACK_CHANNEL = "openTamper:gmSlackUserId";
+const STORAGE_CHANNEL = "openTamper:gmStorage";
 
 function relayToBackground(channel, event) {
   const { id, type, scriptId } = event.data;
@@ -17,6 +18,10 @@ function relayToBackground(channel, event) {
     payload.details = event.data.details;
   } else if (channel === SLACK_CHANNEL) {
     payload.org = event.data.org;
+  } else if (channel === STORAGE_CHANNEL) {
+    payload.op = event.data.op;
+    payload.key = event.data.key;
+    payload.value = event.data.value;
   }
 
   (async () => {
@@ -45,7 +50,7 @@ window.addEventListener("message", (event) => {
   if (event.source !== window || !event.data) return;
 
   const { channel } = event.data;
-  if (channel === XHR_CHANNEL || channel === SLACK_CHANNEL) {
+  if (channel === XHR_CHANNEL || channel === SLACK_CHANNEL || channel === STORAGE_CHANNEL) {
     relayToBackground(channel, event);
   }
 });
